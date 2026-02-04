@@ -1,0 +1,11 @@
+.git
+.github
+.next
+node_modules
+npm-debug.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.vercel
+README.md
