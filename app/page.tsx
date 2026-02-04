@@ -120,9 +120,9 @@ type SessionAction = {
 };
 
 type SessionSummary = {
-  bullets: string[];
-  insights: string[];
-  actions: SessionAction[];
+  bullets?: string[];
+  insights?: string[];
+  actions?: SessionAction[];
 };
 
 type SessionRecord = {
@@ -303,11 +303,17 @@ export default function Page() {
     "Moderate and steady";
   const summaryData = selectedSession?.summary ?? defaultSummary;
   const summaryBullets =
-    summaryData.bullets.length > 0 ? summaryData.bullets : defaultSummary.bullets;
+    summaryData.bullets && summaryData.bullets.length > 0
+      ? summaryData.bullets
+      : defaultSummary.bullets;
   const summaryInsights =
-    summaryData.insights.length > 0 ? summaryData.insights : defaultSummary.insights;
+    summaryData.insights && summaryData.insights.length > 0
+      ? summaryData.insights
+      : defaultSummary.insights;
   const summaryActions =
-    summaryData.actions.length > 0 ? summaryData.actions : defaultSummary.actions;
+    summaryData.actions && summaryData.actions.length > 0
+      ? summaryData.actions
+      : defaultSummary.actions;
 
   const formatSessionDate = (value?: string) => {
     if (!value) {
