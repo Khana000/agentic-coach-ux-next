@@ -36,7 +36,7 @@ const sanitizeMessages = (raw: unknown): SessionMessage[] => {
         (message as SessionMessage).content !== undefined
     )
     .map((message) => ({
-      role: message.role === "assistant" ? "assistant" : "user",
+      role: (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
       content: String(message.content ?? "").trim()
     }))
     .filter((message) => message.content.length > 0);
