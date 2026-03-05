@@ -1,8 +1,9 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Agentic Coach UX",
-  description: "Frontend concept for the Agentic Coach experience."
+  title: "Executive & Leadership Coaching",
+  description:
+    "Evidence-based executive coaching designed for visionaries shaping the future."
 };
 
 export default function RootLayout({

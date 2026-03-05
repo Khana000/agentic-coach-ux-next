@@ -45,96 +45,112 @@ const sanitizeMessages = (raw: unknown): SessionMessage[] => {
 const toObjectId = (id: string) => (ObjectId.isValid(id) ? new ObjectId(id) : null);
 
 export async function GET(_request: Request, { params }: { params: { id: string } }) {
-  const objectId = toObjectId(params.id);
-  if (!objectId) {
-    return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
+  try {
+    const objectId = toObjectId(params.id);
+    if (!objectId) {
+      return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
+    }
+
+    const client = await clientPromise;
+    const db = client.db(DB_NAME);
+    const session = await db.collection(COLLECTION).findOne({ _id: objectId });
+
+    if (!session) {
+      return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    }
+
+    const { _id, ...rest } = session;
+    return NextResponse.json({
+      id: _id.toString(),
+      ...rest
+    });
+  } catch (error) {
+    return NextResponse.json({ error: "Unable to load session." }, { status: 500 });
   }
-
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const session = await db.collection(COLLECTION).findOne({ _id: objectId });
-
-  if (!session) {
-    return NextResponse.json({ error: "Session not found." }, { status: 404 });
-  }
-
-  const { _id, ...rest } = session;
-  return NextResponse.json({
-    id: _id.toString(),
-    ...rest
-  });
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {
-  const objectId = toObjectId(params.id);
-  if (!objectId) {
-    return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
-  }
-
-  let payload: Record<string, unknown>;
   try {
-    payload = (await request.json()) as Record<string, unknown>;
+    const objectId = toObjectId(params.id);
+    if (!objectId) {
+      return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      payload = (await request.json()) as Record<string, unknown>;
+    } catch (error) {
+      return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+    }
+
+    const updates: Record<string, unknown> = {};
+
+    if (typeof payload.title === "string" && payload.title.trim()) {
+      updates.title = payload.title.trim().slice(0, 120);
+    }
+    if (typeof payload.context === "string") {
+      updates.context = payload.context;
+    }
+    if (typeof payload.style === "string") {
+      updates.style = payload.style;
+    }
+    if (isPlainObject(payload.nowState)) {
+      updates.nowState = payload.nowState;
+    }
+    if (payload.messages !== undefined) {
+      updates.messages = sanitizeMessages(payload.messages);
+    }
+    if (isPlainObject(payload.summary)) {
+      updates.summary = payload.summary as SessionSummary;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: "No valid fields to update." }, { status: 400 });
+    }
+
+    updates.updatedAt = new Date();
+
+    const client = await clientPromise;
+    const db = client.db(DB_NAME);
+    const result = await db
+      .collection(COLLECTION)
+      .findOneAndUpdate({ _id: objectId }, { $set: updates }, { returnDocument: "after" });
+
+    // MongoDB v6 returns the document directly unless includeResultMetadata=true.
+    const updatedSession = ((result as unknown as { value?: Record<string, unknown> | null })?.value ??
+      result) as ({ _id: ObjectId } & Record<string, unknown>) | null;
+
+    if (!updatedSession) {
+      return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    }
+
+    const { _id, ...rest } = updatedSession;
+    return NextResponse.json({
+      id: _id.toString(),
+      ...rest
+    });
   } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+    return NextResponse.json({ error: "Unable to update session." }, { status: 500 });
   }
-
-  const updates: Record<string, unknown> = {};
-
-  if (typeof payload.title === "string" && payload.title.trim()) {
-    updates.title = payload.title.trim().slice(0, 120);
-  }
-  if (typeof payload.context === "string") {
-    updates.context = payload.context;
-  }
-  if (typeof payload.style === "string") {
-    updates.style = payload.style;
-  }
-  if (isPlainObject(payload.nowState)) {
-    updates.nowState = payload.nowState;
-  }
-  if (payload.messages !== undefined) {
-    updates.messages = sanitizeMessages(payload.messages);
-  }
-  if (isPlainObject(payload.summary)) {
-    updates.summary = payload.summary as SessionSummary;
-  }
-
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ error: "No valid fields to update." }, { status: 400 });
-  }
-
-  updates.updatedAt = new Date();
-
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const result = await db
-    .collection(COLLECTION)
-    .findOneAndUpdate({ _id: objectId }, { $set: updates }, { returnDocument: "after" });
-
-  if (!result.value) {
-    return NextResponse.json({ error: "Session not found." }, { status: 404 });
-  }
-
-  const { _id, ...rest } = result.value;
-  return NextResponse.json({
-    id: _id.toString(),
-    ...rest
-  });
 }
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
-  const objectId = toObjectId(params.id);
-  if (!objectId) {
-    return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
+  try {
+    const objectId = toObjectId(params.id);
+    if (!objectId) {
+      return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
+    }
+
+    const client = await clientPromise;
+    const db = client.db(DB_NAME);
+    const result = await db.collection(COLLECTION).deleteOne({ _id: objectId });
+
+    if (!result.deletedCount) {
+      return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: "Unable to delete session." }, { status: 500 });
   }
-
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const result = await db.collection(COLLECTION).deleteOne({ _id: objectId });
-
-  if (!result.deletedCount) {
-    return NextResponse.json({ error: "Session not found." }, { status: 404 });
-  }
-
-  return NextResponse.json({ ok: true });
 }

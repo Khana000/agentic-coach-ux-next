@@ -62,25 +62,32 @@ const buildTitle = (payload: SessionPayload, messages: SessionMessage[]) => {
 };
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const limitParam = Number(searchParams.get("limit") ?? 20);
-  const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 100) : 20;
+  try {
+    const { searchParams } = new URL(request.url);
+    const limitParam = Number(searchParams.get("limit") ?? 20);
+    const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 100) : 20;
 
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const sessions = await db
-    .collection(COLLECTION)
-    .find({})
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .toArray();
+    const client = await clientPromise;
+    const db = client.db(DB_NAME);
+    const sessions = await db
+      .collection(COLLECTION)
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
 
-  return NextResponse.json({
-    sessions: sessions.map(({ _id, ...session }) => ({
-      id: _id.toString(),
-      ...session
-    }))
-  });
+    return NextResponse.json({
+      sessions: sessions.map(({ _id, ...session }) => ({
+        id: _id.toString(),
+        ...session
+      }))
+    });
+  } catch (error) {
+    return NextResponse.json({
+      sessions: [],
+      warning: "Session storage is temporarily unavailable."
+    });
+  }
 }
 
 export async function POST(request: Request) {
@@ -108,12 +115,20 @@ export async function POST(request: Request) {
     updatedAt: now
   };
 
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const result = await db.collection(COLLECTION).insertOne(session);
+  try {
+    const client = await clientPromise;
+    const db = client.db(DB_NAME);
+    const result = await db.collection(COLLECTION).insertOne(session);
 
-  return NextResponse.json({
-    id: result.insertedId.toString(),
-    ...session
-  });
+    return NextResponse.json({
+      id: result.insertedId.toString(),
+      ...session
+    });
+  } catch (error) {
+    return NextResponse.json({
+      id: `fallback-${Date.now()}`,
+      ...session,
+      warning: "Session was not persisted because storage is temporarily unavailable."
+    });
+  }
 }

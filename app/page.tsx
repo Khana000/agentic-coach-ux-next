@@ -1,1347 +1,2028 @@
 "use client";
 
-import type { ChangeEvent, KeyboardEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useConversation } from "@elevenlabs/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select } from "../components/ui/select";
+import { Textarea } from "../components/ui/textarea";
 
-const screens = [
-  { id: "onboarding", label: "Onboarding" },
-  { id: "intake", label: "Style Intake" },
-  { id: "home", label: "Home" },
-  { id: "session", label: "Session" },
-  { id: "summary", label: "Summary" },
-  { id: "history", label: "History" }
-];
-
-const coacheeStyles = [
-  { id: "direct", label: "Direct and concise" },
-  { id: "warm", label: "Warm and supportive" },
-  { id: "analytical", label: "Analytical and structured" },
-  { id: "balanced", label: "Balanced and practical" }
-];
-
-const pacePreferences = [
-  { id: "fast", label: "Fast and focused" },
-  { id: "moderate", label: "Moderate and steady" },
-  { id: "slow", label: "Slow and reflective" }
-];
-
-const stressLevels = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" }
-];
-
-const readinessLevels = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" }
-];
-
-const confidenceLevels = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" }
-];
-
-const conversationContexts = [
-  { id: "visibility", label: "Executive visibility" },
-  { id: "ownership", label: "Ownership and accountability" },
-  { id: "conflict", label: "Conflict or tension" },
-  { id: "growth", label: "Career growth" },
-  { id: "delivery", label: "Delivery risk" }
-];
-
-const promptByContext = {
-  visibility: {
-    direct: "What is the one outcome you want the SVP to associate with you?",
-    warm: "When you imagine the SVP describing your impact, what would you want them to say?",
-    analytical: "Which result or metric best proves your value to the SVP?",
-    balanced: "What outcome would you most want senior leaders to associate with you?"
-  },
-  ownership: {
-    direct: "What is the smallest ownership ask that would still matter this week?",
-    warm: "What would feeling supported by ownership look like this week?",
-    analytical: "Which decision or review would most reduce rework right now?",
-    balanced: "What specific ownership would make the biggest difference?"
-  },
-  conflict: {
-    direct: "What boundary do you need to set, clearly and calmly?",
-    warm: "What would a fair, respectful outcome look like here?",
-    analytical: "What evidence supports your position, and what is still unclear?",
-    balanced: "What do you want to be true after the next conversation?"
-  },
-  growth: {
-    direct: "What role or scope do you want to lead next?",
-    warm: "What kind of work energizes you most right now?",
-    analytical: "Which skills or wins make your next move most credible?",
-    balanced: "What growth move matters most in the next 6 months?"
-  },
-  delivery: {
-    direct: "What must happen by when to hit the deadline?",
-    warm: "What support would make the deadline feel realistic?",
-    analytical: "What are the critical path items and risks?",
-    balanced: "What is the clearest path to deliver on time?"
-  }
-};
-
-const actionHintByContext = {
-  visibility: "Pick one result and one leader to brief this month.",
-  ownership: "Name one decision and one deadline you need aligned.",
-  conflict: "Define one boundary and one request you will make.",
-  growth: "Choose one growth move and one sponsor to engage.",
-  delivery: "List the top two risks and your mitigation plan."
-};
-
-const coachResponseByStyle = {
-  direct: (hint: string) => `Let's be concrete. ${hint}`,
-  warm: (hint: string) => `If you are open to it, let's make this concrete. ${hint}`,
-  analytical: (hint: string) => `Let's operationalize this. ${hint}`,
-  balanced: (hint: string) => `Let's make this concrete. ${hint}`
-};
-
-type CoachMeta = {
-  heron_mode?: string;
-  push_pull?: string;
-  intensity?: number;
-  gestalt_move?: string;
-  action_focus?: string;
-  tone_notes?: string;
-};
+type AppScreen = "cover" | "welcome" | "session";
+type CoachGender = "male" | "female";
+type ChatRole = "assistant" | "user";
+type CoachingStartMode = "text" | "voice";
+type VoiceChannelStatus = "disconnected" | "connecting" | "connected";
 
 type ChatMessage = {
-  role: "user" | "assistant";
+  role: ChatRole;
   content: string;
 };
 
-type SessionAction = {
-  title: string;
-  when?: string;
-  confidence?: "low" | "medium" | "high";
+type TrialStatus = {
+  sessionsLimit: number;
+  sessionsUsed: number;
+  sessionsRemaining: number;
+  activeSessionId: string | null;
 };
 
-type SessionSummary = {
-  bullets?: string[];
-  insights?: string[];
-  actions?: SessionAction[];
+type AssistantToolCall = {
+  name: string;
+  payload?: unknown;
+  raw: string;
 };
 
-type SessionRecord = {
+type ToolPlanItem = {
+  action: string;
+};
+
+type ReminderItem = {
   id: string;
-  title: string;
-  summary?: SessionSummary;
-  createdAt?: string;
-  messages?: ChatMessage[];
-  context?: string;
-  style?: string;
-  nowState?: Record<string, string>;
+  action: string;
+  dueAt: string;
+  toEmail: string;
+  createdAt: string;
+  completedAt: string | null;
+  browserNotifiedAt: string | null;
 };
 
-const defaultSummary: SessionSummary = {
-  bullets: [
-    "You want clearer ownership on key reviews.",
-    "Delays cause rework and erode trust.",
-    "A focused review window reduces friction."
-  ],
-  insights: [
-    "Your strongest lever is a concrete ask with a deadline.",
-    "Parallel peer review protects the timeline."
-  ],
-  actions: [
-    { title: "Ask for a 20-minute review", when: "Thursday 3pm", confidence: "high" },
-    { title: "Send a 1-page decision summary", when: "Thursday 9am", confidence: "medium" }
-  ]
+const BETA_PASSWORD = "12345";
+const MAX_BETA_USERS = 8;
+const MAX_TRIAL_SESSIONS = 1;
+const TRIAL_STATE_STORAGE_KEY_PREFIX = "agenticCoach.trialState.v7";
+const TRIAL_STATE_STORAGE_KEY_ROOT = "agenticCoach.trialState.";
+const TRIAL_RESET_QUERY_KEYS = ["trialReset", "resetTrial", "reset_trial", "renewTrial"] as const;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REMINDERS_STORAGE_KEY = "agenticCoach.reminders.v1";
+const REMINDER_POLL_MS = 30_000;
+const DEFAULT_ELEVENLABS_AGENT_ID = "agent_2301kj5gk2bkezts94y36e0tzxza";
+const DEFAULT_ELEVENLABS_VOICE_ID_MALE = "QF9HJC7XWnue5c9W3LkY";
+const DEFAULT_ELEVENLABS_VOICE_ID_FEMALE = "gJx1vCzNCD1EQHT212Ls";
+
+const INITIAL_COACH_MESSAGE =
+  "Welcome. What outcome would make this coaching session most valuable for you today?";
+
+const PLAN_INTENT_PATTERN =
+  /\b(create|build|make|generate|draft|prepare|show|give)\b[\s\w]{0,40}\b(coaching plan|action plan|development plan|plan)\b|\b(action plan|development plan|coaching plan)\b/i;
+const PLAN_NEGATIVE_PATTERN = /\b(don't|do not|not now|no plan|without plan)\b/i;
+const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(action plan|development plan)\b/im;
+const PLAN_APPROVAL_PATTERN =
+  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it)\b/i;
+const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
+
+const COACH_ENDING_MESSAGE =
+  "Hopefully you found this of use, look forward to our next session, thanks";
+
+const conversationContexts = [
+  { id: "visibility", label: "Visibility & influence" },
+  { id: "communication", label: "Communication" },
+  { id: "leadership", label: "Leadership" },
+  { id: "performance", label: "Performance" }
+] as const;
+
+const coachProfiles = {
+  male: {
+    label: "Male coach",
+    displayName: "Male coach",
+    avatarSrc: "/pexels-8837558.jpg",
+    avatarAlt: "Male executive coach"
+  },
+  female: {
+    label: "Female coach",
+    displayName: "Female coach",
+    avatarSrc: "/u-1698499352020-521e54040e04.jpg",
+    avatarAlt: "Female executive coach"
+  }
+} as const;
+
+const normalizeUsernameInput = (value: string) => value.trim();
+
+const resolveAllowedBetaUsername = (raw: string) => {
+  const normalized = normalizeUsernameInput(raw);
+  if (!normalized) {
+    return null;
+  }
+
+  const matched = normalized.match(/^beta([1-9]\d*)$/i);
+  if (!matched) {
+    return null;
+  }
+
+  const index = Number(matched[1]);
+  if (!Number.isInteger(index) || index < 1 || index > MAX_BETA_USERS) {
+    return null;
+  }
+
+  return `Beta${index}`;
 };
 
-const parseCoachJson = (raw: string) => {
-  const firstBrace = raw.indexOf("{");
-  const lastBrace = raw.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1) {
-    return { question: raw } as { question: string } & CoachMeta;
+const normalizeTrialStatus = (raw?: Partial<TrialStatus> | null): TrialStatus => {
+  const sessionsLimit = MAX_TRIAL_SESSIONS;
+  const sessionsUsed = Math.max(0, Math.min(sessionsLimit, Number(raw?.sessionsUsed ?? 0)));
+  const sessionsRemaining = Math.max(0, sessionsLimit - sessionsUsed);
+
+  return {
+    sessionsLimit,
+    sessionsUsed,
+    sessionsRemaining,
+    activeSessionId:
+      typeof raw?.activeSessionId === "string" && raw.activeSessionId.trim().length > 0
+        ? raw.activeSessionId
+        : null
+  };
+};
+
+const getTrialStorageKey = (betaUsername?: string | null) => {
+  const resolved = resolveAllowedBetaUsername(betaUsername ?? "");
+  return resolved
+    ? `${TRIAL_STATE_STORAGE_KEY_PREFIX}:${resolved.toLowerCase()}`
+    : `${TRIAL_STATE_STORAGE_KEY_PREFIX}:guest`;
+};
+
+const normalizeToolCallName = (name: string) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[:\s-]+/g, "_");
+
+const tryParseToolPayload = (rawPayload: string): unknown => {
+  const trimmed = rawPayload.trim();
+  if (!trimmed) {
+    return undefined;
   }
 
   try {
-    const parsed = JSON.parse(raw.slice(firstBrace, lastBrace + 1));
-    return {
-      question: parsed.question ?? raw,
-      heron_mode: parsed.heron_mode,
-      push_pull: parsed.push_pull,
-      intensity: parsed.intensity,
-      gestalt_move: parsed.gestalt_move,
-      action_focus: parsed.action_focus,
-      tone_notes: parsed.tone_notes
-    } as { question: string } & CoachMeta;
-  } catch (error) {
-    return { question: raw } as { question: string } & CoachMeta;
+    return JSON.parse(trimmed);
+  } catch {
+    const objectStart = trimmed.indexOf("{");
+    const objectEnd = trimmed.lastIndexOf("}");
+    if (objectStart >= 0 && objectEnd > objectStart) {
+      const objectCandidate = trimmed.slice(objectStart, objectEnd + 1);
+      try {
+        return JSON.parse(objectCandidate);
+      } catch {
+        // no-op
+      }
+    }
   }
+
+  return trimmed;
 };
 
-const buildPrompt = (
-  basePrompt: string,
-  {
-    stressLevel,
-    challengeReadiness,
-    confidenceLevel
-  }: {
-    stressLevel: string;
-    challengeReadiness: string;
-    confidenceLevel: string;
-  }
-) => {
-  const prefixParts = [];
-  if (stressLevel === "high") {
-    prefixParts.push("Take a breath.");
-  }
-  if (challengeReadiness === "low") {
-    prefixParts.push("Let's keep this small and manageable.");
-  }
-  if (confidenceLevel === "low") {
-    prefixParts.push("Start with one step you can fully own.");
-  }
-  const prefix = prefixParts.length > 0 ? `${prefixParts.join(" ")} ` : "";
-  return `${prefix}${basePrompt}`;
+const extractAssistantToolCalls = (rawText: string) => {
+  const toolCalls: AssistantToolCall[] = [];
+  const pattern = /\(\s*calling tool:\s*([a-zA-Z0-9_:-]+)([\s\S]*?)\)/gi;
+
+  const displayText = rawText
+    .replace(pattern, (fullMatch, nameCapture, restCapture) => {
+      const name = normalizeToolCallName(String(nameCapture ?? ""));
+      if (!name) {
+        return "";
+      }
+
+      const rest = String(restCapture ?? "");
+      const payloadMatch = rest.match(/with payload:\s*([\s\S]*)$/i);
+      const payloadRaw = payloadMatch?.[1]?.trim() ?? "";
+
+      toolCalls.push({
+        name,
+        payload: payloadRaw ? tryParseToolPayload(payloadRaw) : undefined,
+        raw: fullMatch.trim()
+      });
+
+      return "";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return { displayText, toolCalls };
 };
 
-const buildCoachResponse = (
-  baseResponse: string,
-  {
-    stressLevel,
-    pacePreference,
-    confidenceLevel
-  }: {
-    stressLevel: string;
-    pacePreference: string;
-    confidenceLevel: string;
+const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
+  if (!payload || typeof payload !== "object") {
+    return [];
   }
-) => {
-  const prefixParts = [];
-  if (stressLevel === "high") {
-    prefixParts.push("No rush.");
+
+  const source = payload as Record<string, unknown>;
+  const rawItems = source.action_plan ?? source.actions ?? source.plan ?? [];
+  if (!Array.isArray(rawItems)) {
+    return [];
   }
-  if (pacePreference === "fast") {
-    prefixParts.push("Quick version.");
-  }
-  if (pacePreference === "slow") {
-    prefixParts.push("Let's slow it down.");
-  }
-  const prefix = prefixParts.length > 0 ? `${prefixParts.join(" ")} ` : "";
-  let suffix = "";
-  if (confidenceLevel === "low") {
-    suffix = " Keep it small and build momentum.";
-  }
-  if (confidenceLevel === "high") {
-    suffix = " If you want to stretch, add one bolder step.";
-  }
-  return `${prefix}${baseResponse}${suffix}`;
+
+  return rawItems
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const action = String((item as Record<string, unknown>).action ?? "").trim();
+      return action ? { action } : null;
+    })
+    .filter((item): item is ToolPlanItem => Boolean(item));
 };
 
-export default function Page() {
-  const [activeScreen, setActiveScreen] = useState("onboarding");
-  const [coacheeStyle, setCoacheeStyle] = useState("balanced");
-  const [conversationContext, setConversationContext] = useState("visibility");
-  const [pacePreference, setPacePreference] = useState("moderate");
-  const [stressLevel, setStressLevel] = useState("medium");
-  const [challengeReadiness, setChallengeReadiness] = useState("medium");
-  const [confidenceLevel, setConfidenceLevel] = useState("medium");
+const extractActionItemsFromText = (text: string) => {
+  const bulletPattern = /^\s*([-*+]\s+|\d+[.)]\s+)(.+)$/;
+  const lines = text.split("\n");
+  const result: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(bulletPattern);
+    if (!match) {
+      continue;
+    }
+
+    const item = match[2].trim();
+    if (!item) {
+      continue;
+    }
+
+    const lowered = item.toLowerCase();
+    if (result.some((existing) => existing.toLowerCase() === lowered)) {
+      continue;
+    }
+
+    result.push(item);
+  }
+
+  return result;
+};
+
+const getTrialResetRequested = () => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  return TRIAL_RESET_QUERY_KEYS.some((key) => params.has(key));
+};
+
+const clearAllTrialStates = () => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const keysToRemove: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key && key.startsWith(TRIAL_STATE_STORAGE_KEY_ROOT)) {
+      keysToRemove.push(key);
+    }
+  }
+
+  keysToRemove.forEach((key) => window.localStorage.removeItem(key));
+};
+
+export default function HomePage() {
+  const [screen, setScreen] = useState<AppScreen>("cover");
+
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isAuthenticatingTrial, setIsAuthenticatingTrial] = useState(false);
+  const [authenticatedBetaUsername, setAuthenticatedBetaUsername] = useState<string | null>(null);
+
+  const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [coachingStartMode, setCoachingStartMode] = useState<CoachingStartMode>("text");
+  const [voiceChannelStatus, setVoiceChannelStatus] = useState<VoiceChannelStatus>("disconnected");
+  const [isVoiceAgentSpeaking, setIsVoiceAgentSpeaking] = useState(false);
+
+  const [coachGender, setCoachGender] = useState<CoachGender>("male");
+  const [conversationContext, setConversationContext] =
+    useState<(typeof conversationContexts)[number]["id"]>("visibility");
+
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { role: "assistant", content: "How can I help you today?" }
+    { role: "assistant", content: INITIAL_COACH_MESSAGE }
   ]);
   const [chatInput, setChatInput] = useState("");
-  const [coachMeta, setCoachMeta] = useState<CoachMeta | null>(null);
+  const [isChatting, setIsChatting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [isChatting, setIsChatting] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [voiceRepliesEnabled, setVoiceRepliesEnabled] = useState(true);
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
-  const [selectedSession, setSelectedSession] = useState<SessionRecord | null>(null);
-  const [isSavingSession, setIsSavingSession] = useState(false);
-  const [historyStatus, setHistoryStatus] = useState("");
-  const [historyError, setHistoryError] = useState("");
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  const [executionToolsEnabled, setExecutionToolsEnabled] = useState(false);
+  const [deliveryEmail, setDeliveryEmail] = useState("");
+  const [deliveryName, setDeliveryName] = useState("");
+  const [calendarAction, setCalendarAction] = useState("");
+  const [calendarStartLocal, setCalendarStartLocal] = useState("");
+  const [actionDueDates, setActionDueDates] = useState<Record<string, string>>({});
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    "unsupported"
+  );
+  const [isSendingPlanEmail, setIsSendingPlanEmail] = useState(false);
+  const [isSendingCalendarInvite, setIsSendingCalendarInvite] = useState(false);
+  const [isSendingAllCalendarInvites, setIsSendingAllCalendarInvites] = useState(false);
+  const [isSendingCombinedDelivery, setIsSendingCombinedDelivery] = useState(false);
 
-  const basePrompt =
-    promptByContext[conversationContext]?.[coacheeStyle] ?? promptByContext.visibility.balanced;
-  const actionHint =
-    actionHintByContext[conversationContext] ?? actionHintByContext.visibility;
-  const baseCoachResponse =
-    coachResponseByStyle[coacheeStyle]?.(actionHint) ?? coachResponseByStyle.balanced(actionHint);
+  const chatMessagesRef = useRef(chatMessages);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const pendingPlanSignatureRef = useRef("");
+  const pendingPlanItemsRef = useRef<string[]>([]);
+  const pendingPlanAssistantIndexRef = useRef(-1);
+  const appliedPlanSignatureRef = useRef("");
+  const sessionActiveRef = useRef(sessionActive);
+  const coachingStartModeRef = useRef<CoachingStartMode>(coachingStartMode);
+  const voiceBootingRef = useRef(false);
+  const voiceAutoConnectAttemptedRef = useRef(false);
+  const voiceChannelStatusRef = useRef<VoiceChannelStatus>(voiceChannelStatus);
 
-  const promptText = buildPrompt(basePrompt, {
-    stressLevel,
-    challengeReadiness,
-    confidenceLevel
-  });
-  const coachResponse = buildCoachResponse(baseCoachResponse, {
-    stressLevel,
-    pacePreference,
-    confidenceLevel
-  });
+  const selectedCoach = coachProfiles[coachGender];
+
   const lastAssistantMessage =
     [...chatMessages].reverse().find((message) => message.role === "assistant")?.content ?? "";
-  const displayCoachOutput = lastAssistantMessage || coachResponse;
 
-  const styleLabel =
-    coacheeStyles.find((style) => style.id === coacheeStyle)?.label ?? "Balanced and practical";
+  const extractedActionItems = useMemo(
+    () => extractActionItemsFromText(lastAssistantMessage),
+    [lastAssistantMessage]
+  );
+  const reminderItemsSorted = useMemo(
+    () => [...reminders].sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
+    [reminders]
+  );
 
-  const contextLabel =
-    conversationContexts.find((context) => context.id === conversationContext)?.label ??
-    "Executive visibility";
-
-  const stressLabel = stressLevels.find((level) => level.id === stressLevel)?.label ?? "Medium";
-  const readinessLabel =
-    readinessLevels.find((level) => level.id === challengeReadiness)?.label ?? "Medium";
-  const confidenceLabel =
-    confidenceLevels.find((level) => level.id === confidenceLevel)?.label ?? "Medium";
-  const paceLabel =
-    pacePreferences.find((preference) => preference.id === pacePreference)?.label ??
-    "Moderate and steady";
-  const summaryData = selectedSession?.summary ?? defaultSummary;
-  const summaryBullets =
-    summaryData.bullets && summaryData.bullets.length > 0
-      ? summaryData.bullets
-      : defaultSummary.bullets;
-  const summaryInsights =
-    summaryData.insights && summaryData.insights.length > 0
-      ? summaryData.insights
-      : defaultSummary.insights;
-  const summaryActions =
-    summaryData.actions && summaryData.actions.length > 0
-      ? summaryData.actions
-      : defaultSummary.actions;
-
-  const formatSessionDate = (value?: string) => {
-    if (!value) {
-      return "Recently";
-    }
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      return "Recently";
-    }
-    return parsed.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric"
-    });
-  };
-
-  useEffect(() => {
-    return () => {
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
-    };
-  }, [audioUrl]);
-
-  useEffect(() => {
-    if (activeScreen !== "history") {
+  const appendLiveMessage = (role: ChatRole, rawContent: string) => {
+    const content = rawContent.trim();
+    if (!content) {
       return;
     }
 
-    let isCurrent = true;
+    setChatMessages((previous) => {
+      const last = previous[previous.length - 1];
+      if (last && last.role === role && last.content.trim() === content) {
+        return previous;
+      }
+      const next = [...previous, { role, content }];
+      chatMessagesRef.current = next;
+      return next;
+    });
+  };
 
-    const loadHistory = async () => {
-      setHistoryError("");
-      setHistoryStatus("Loading saved sessions...");
+  const resolveElevenLabsAgentId = () =>
+    process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID?.trim() || DEFAULT_ELEVENLABS_AGENT_ID;
+
+  const resolveElevenLabsVoiceId = (gender: CoachGender) =>
+    gender === "female"
+      ? process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID_FEMALE?.trim() || DEFAULT_ELEVENLABS_VOICE_ID_FEMALE
+      : process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID_MALE?.trim() || DEFAULT_ELEVENLABS_VOICE_ID_MALE;
+
+  const elevenConversation = useConversation({
+    onConnect: () => {
+      setVoiceChannelStatus("connected");
+      setErrorMessage("");
+      setStatusMessage("Voice channel connected. Speak naturally.");
+    },
+    onDisconnect: () => {
+      setVoiceChannelStatus("disconnected");
+      setIsVoiceAgentSpeaking(false);
+      if (sessionActiveRef.current && coachingStartModeRef.current === "voice") {
+        setStatusMessage("Voice channel disconnected. You can continue by text or reconnect voice.");
+      }
+    },
+    onError: (message) => {
+      const resolved =
+        typeof message === "string" && message.trim() ? message : "Voice channel error.";
+      setVoiceChannelStatus("disconnected");
+      setIsVoiceAgentSpeaking(false);
+      setErrorMessage(resolved);
+    },
+    onModeChange: ({ mode }) => {
+      setIsVoiceAgentSpeaking(mode === "speaking");
+    },
+    onStatusChange: ({ status }) => {
+      if (status === "connected") {
+        setVoiceChannelStatus("connected");
+        return;
+      }
+      if (status === "connecting") {
+        setVoiceChannelStatus("connecting");
+        return;
+      }
+      if (status === "disconnecting" || status === "disconnected") {
+        setVoiceChannelStatus("disconnected");
+      }
+    },
+    onMessage: (payload) => {
+      const rawMessage = typeof payload?.message === "string" ? payload.message : "";
+      if (!rawMessage.trim()) {
+        return;
+      }
+
+      const isAssistant = payload?.role === "agent";
+      if (isAssistant) {
+        const toolEnvelope = extractAssistantToolCalls(rawMessage);
+        const assistantText = (toolEnvelope.displayText || rawMessage).trim();
+        if (assistantText) {
+          appendLiveMessage("assistant", assistantText);
+        }
+        if (toolEnvelope.toolCalls.length > 0) {
+          void handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText || rawMessage);
+        }
+        return;
+      }
+
+      appendLiveMessage("user", rawMessage);
+    }
+  });
+
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
+
+  useEffect(() => {
+    sessionActiveRef.current = sessionActive;
+  }, [sessionActive]);
+
+  useEffect(() => {
+    coachingStartModeRef.current = coachingStartMode;
+  }, [coachingStartMode]);
+
+  useEffect(() => {
+    voiceChannelStatusRef.current = voiceChannelStatus;
+  }, [voiceChannelStatus]);
+
+  useEffect(() => {
+    if (!sessionActive || coachingStartMode !== "voice") {
+      voiceAutoConnectAttemptedRef.current = false;
+      return;
+    }
+
+    if (voiceChannelStatus !== "disconnected") {
+      return;
+    }
+
+    if (voiceBootingRef.current || voiceAutoConnectAttemptedRef.current) {
+      return;
+    }
+
+    voiceAutoConnectAttemptedRef.current = true;
+    void startVoiceSession();
+  }, [sessionActive, coachingStartMode, voiceChannelStatus, coachGender]);
+
+  useEffect(() => {
+    const container = transcriptRef.current;
+    if (!container) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [chatMessages.length, isChatting]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (getTrialResetRequested()) {
+      clearAllTrialStates();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+
+    setNotificationPermission(window.Notification.permission);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const raw = window.localStorage.getItem(REMINDERS_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      const normalized = parsed
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+
+          const record = item as Partial<ReminderItem>;
+          const action = String(record.action ?? "").trim();
+          const dueAt = String(record.dueAt ?? "").trim();
+          const toEmail = String(record.toEmail ?? "").trim();
+          if (!action || !dueAt || !toEmail) {
+            return null;
+          }
+
+          return {
+            id: String(record.id ?? `${action}-${dueAt}`),
+            action,
+            dueAt,
+            toEmail,
+            createdAt: String(record.createdAt ?? new Date().toISOString()),
+            completedAt: record.completedAt ? String(record.completedAt) : null,
+            browserNotifiedAt: record.browserNotifiedAt ? String(record.browserNotifiedAt) : null
+          } as ReminderItem;
+        })
+        .filter((item): item is ReminderItem => Boolean(item));
+
+      setReminders(normalized);
+    } catch {
+      setReminders([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(REMINDERS_STORAGE_KEY, JSON.stringify(reminders));
+  }, [reminders]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || notificationPermission !== "granted") {
+      return;
+    }
+
+    const notifyDueReminders = () => {
+      const now = Date.now();
+      const due = reminders.filter((reminder) => {
+        if (reminder.completedAt || reminder.browserNotifiedAt) {
+          return false;
+        }
+        return new Date(reminder.dueAt).getTime() <= now;
+      });
+
+      if (due.length === 0) {
+        return;
+      }
+
+      due.forEach((reminder) => {
+        try {
+          new window.Notification("Agentic Coach reminder", {
+            body: reminder.action
+          });
+        } catch {
+          // no-op
+        }
+      });
+
+      const stamp = new Date().toISOString();
+      setReminders((previous) =>
+        previous.map((item) =>
+          due.some((entry) => entry.id === item.id)
+            ? { ...item, browserNotifiedAt: stamp }
+            : item
+        )
+      );
+    };
+
+    notifyDueReminders();
+    const interval = window.setInterval(notifyDueReminders, REMINDER_POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [notificationPermission, reminders]);
+
+  useEffect(() => {
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (lastMessage?.role !== "assistant") {
+      return;
+    }
+
+    if (!PLAN_OUTPUT_PATTERN.test(lastMessage.content) || extractedActionItems.length === 0) {
+      return;
+    }
+
+    const signature = extractedActionItems
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+      .join("||");
+
+    if (!signature) {
+      return;
+    }
+
+    if (signature === appliedPlanSignatureRef.current || signature === pendingPlanSignatureRef.current) {
+      return;
+    }
+
+    pendingPlanSignatureRef.current = signature;
+    pendingPlanItemsRef.current = extractedActionItems;
+    pendingPlanAssistantIndexRef.current = chatMessages.length - 1;
+    setExecutionToolsEnabled(true);
+    setStatusMessage(
+      "Action plan created. If the coachee agrees, I will keep it in Action Hub."
+    );
+  }, [chatMessages, extractedActionItems]);
+
+  useEffect(() => {
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (lastMessage?.role !== "user") {
+      return;
+    }
+
+    if (!pendingPlanSignatureRef.current) {
+      return;
+    }
+
+    if (chatMessages.length - 1 <= pendingPlanAssistantIndexRef.current) {
+      return;
+    }
+
+    const text = lastMessage.content.trim();
+    if (!text || PLAN_REJECTION_PATTERN.test(text) || !PLAN_APPROVAL_PATTERN.test(text)) {
+      return;
+    }
+
+    if (pendingPlanItemsRef.current.length === 0) {
+      return;
+    }
+
+    appliedPlanSignatureRef.current = pendingPlanSignatureRef.current;
+    pendingPlanSignatureRef.current = "";
+    pendingPlanItemsRef.current = [];
+    pendingPlanAssistantIndexRef.current = -1;
+    setStatusMessage("Action plan agreed.");
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (extractedActionItems.length === 0) {
+      setCalendarAction("");
+      setActionDueDates({});
+      return;
+    }
+
+    setCalendarAction((current) =>
+      current && extractedActionItems.includes(current) ? current : extractedActionItems[0]
+    );
+    setActionDueDates((previous) => {
+      const next: Record<string, string> = {};
+      extractedActionItems.forEach((item) => {
+        next[item] = previous[item] ?? "";
+      });
+      return next;
+    });
+  }, [extractedActionItems]);
+
+  const getStoredTrialStatus = (betaUsername?: string | null) => {
+    if (typeof window === "undefined") {
+      return normalizeTrialStatus();
+    }
+
+    const storageKey = getTrialStorageKey(betaUsername);
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) {
+      return normalizeTrialStatus();
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<TrialStatus>;
+      return normalizeTrialStatus(parsed);
+    } catch {
+      return normalizeTrialStatus();
+    }
+  };
+
+  const saveTrialStatus = (status: TrialStatus, betaUsername?: string | null) => {
+    const normalized = normalizeTrialStatus(status);
+    setTrialStatus(normalized);
+
+    if (typeof window !== "undefined") {
+      const storageKey = getTrialStorageKey(betaUsername);
+      window.localStorage.setItem(storageKey, JSON.stringify(normalized));
+    }
+
+    return normalized;
+  };
+
+  const readApiError = async (response: Response, fallback: string) => {
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      details?: string;
+    };
+    const primary = typeof payload?.error === "string" && payload.error.trim() ? payload.error.trim() : fallback;
+    const details = typeof payload?.details === "string" && payload.details.trim() ? payload.details.trim() : "";
+    return details ? `${primary} ${details}` : primary;
+  };
+
+  const stopVoiceSession = async (options?: { preserveBooting?: boolean }) => {
+    if (!options?.preserveBooting) {
+      voiceBootingRef.current = false;
+    }
+    try {
+      await elevenConversation.endSession();
+    } catch {
+      // no-op
+    }
+    setVoiceChannelStatus("disconnected");
+    setIsVoiceAgentSpeaking(false);
+  };
+
+  const waitForVoiceConnected = async (timeoutMs = 9000) => {
+    if (voiceChannelStatusRef.current === "connected") {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now();
+      const intervalId = window.setInterval(() => {
+        if (voiceChannelStatusRef.current === "connected") {
+          window.clearInterval(intervalId);
+          resolve();
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          window.clearInterval(intervalId);
+          reject(new Error("Timed out waiting for voice channel connection."));
+        }
+      }, 150);
+    });
+  };
+
+  const startVoiceSession = async () => {
+    if (voiceBootingRef.current) {
+      return false;
+    }
+
+    if (typeof window === "undefined" || typeof navigator === "undefined") {
+      setErrorMessage("Voice is only available in the browser.");
+      return false;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMessage("Microphone is not available in this browser.");
+      return false;
+    }
+
+    if (voiceChannelStatus === "connected") {
+      return true;
+    }
+
+    setErrorMessage("");
+    setStatusMessage("Connecting voice channel...");
+    setVoiceChannelStatus("connecting");
+    voiceBootingRef.current = true;
+
+    const agentId = resolveElevenLabsAgentId();
+
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      let conversationToken = "";
+      let tokenError = "";
+      try {
+        const tokenResponse = await fetch(`/api/elevenlabs/token?agentId=${encodeURIComponent(agentId)}`, {
+          method: "GET",
+          cache: "no-store"
+        });
+        const tokenRaw = await tokenResponse.text();
+        const tokenPayload = (tokenRaw ? JSON.parse(tokenRaw) : {}) as {
+          token?: string;
+          error?: string;
+          warning?: string;
+        };
+
+        if (tokenResponse.ok) {
+          conversationToken =
+            typeof tokenPayload?.token === "string" && tokenPayload.token.trim()
+              ? tokenPayload.token.trim()
+              : "";
+          if (!conversationToken && typeof tokenPayload?.warning === "string" && tokenPayload.warning.trim()) {
+            tokenError = tokenPayload.warning.trim();
+          }
+        } else {
+          tokenError = await readApiError(tokenResponse, "Unable to create voice token.");
+        }
+      } catch (tokenFetchError) {
+        tokenError =
+          tokenFetchError instanceof Error
+            ? tokenFetchError.message
+            : "Unable to read voice token response.";
+      }
+
+      const attempts: Array<{ label: string; options: Record<string, unknown> }> = [];
+      if (conversationToken) {
+        attempts.push({
+          label: "token + webrtc",
+          options: {
+            conversationToken,
+            connectionType: "webrtc"
+          }
+        });
+        attempts.push({
+          label: "token + websocket",
+          options: {
+            conversationToken,
+            connectionType: "websocket"
+          }
+        });
+      }
+      attempts.push({
+        label: "agent + websocket",
+        options: {
+          agentId,
+          connectionType: "websocket"
+        }
+      });
+      attempts.push({
+        label: "agent + webrtc",
+        options: {
+          agentId,
+          connectionType: "webrtc"
+        }
+      });
+
+      const attemptErrors: string[] = [];
+      for (const attempt of attempts) {
+        try {
+          setStatusMessage(`Connecting voice (${attempt.label})...`);
+          await stopVoiceSession({ preserveBooting: true });
+          await elevenConversation.startSession(attempt.options as any);
+          await waitForVoiceConnected(9000);
+          setErrorMessage("");
+          setStatusMessage("Voice channel connected. Two-way conversation is live.");
+          return true;
+        } catch (attemptError) {
+          const detail =
+            attemptError instanceof Error ? attemptError.message : "Connection attempt failed.";
+          attemptErrors.push(`${attempt.label}: ${detail}`);
+        }
+      }
+
+      const detailMessage = [tokenError, ...attemptErrors].filter(Boolean).join(" | ");
+      setVoiceChannelStatus("disconnected");
+      setIsVoiceAgentSpeaking(false);
+      setErrorMessage(detailMessage || "Unable to connect voice channel.");
+      setStatusMessage("Voice channel unavailable. Continue by text or reconnect.");
+      return false;
+    } catch (primaryError) {
+      const detail =
+        primaryError instanceof Error ? primaryError.message : "Unable to connect voice channel.";
+      setVoiceChannelStatus("disconnected");
+      setIsVoiceAgentSpeaking(false);
+      setErrorMessage(detail);
+      setStatusMessage("Voice channel unavailable. Continue by text or reconnect.");
+      return false;
+    } finally {
+      voiceBootingRef.current = false;
+    }
+  };
+
+  const startTextSession = () => {
+    const trialUser = authenticatedBetaUsername ?? resolveAllowedBetaUsername(username);
+    const current = trialStatus ?? getStoredTrialStatus(trialUser);
+
+    if (current.activeSessionId) {
+      sessionActiveRef.current = true;
+      setSessionActive(true);
+      setStatusMessage("Coaching session active.");
+      setErrorMessage("");
+      return true;
+    }
+
+    if (current.sessionsRemaining <= 0) {
+      setErrorMessage("Trial limit reached: no coaching sessions remaining.");
+      return false;
+    }
+
+    const next = saveTrialStatus(
+      {
+        ...current,
+        sessionsUsed: current.sessionsUsed + 1,
+        sessionsRemaining: current.sessionsRemaining - 1,
+        activeSessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      },
+      trialUser
+    );
+
+    sessionActiveRef.current = Boolean(next.activeSessionId);
+    setSessionActive(Boolean(next.activeSessionId));
+    setChatMessages([{ role: "assistant", content: INITIAL_COACH_MESSAGE }]);
+    setChatInput("");
+    setExecutionToolsEnabled(false);
+    pendingPlanSignatureRef.current = "";
+    pendingPlanItemsRef.current = [];
+    pendingPlanAssistantIndexRef.current = -1;
+    setStatusMessage("Coaching session started.");
+    setErrorMessage("");
+    return true;
+  };
+
+  const startSelectedSession = async () => {
+    const started = startTextSession();
+    if (!started) {
+      return;
+    }
+
+    if (coachingStartMode === "voice") {
+      await startVoiceSession();
+      return;
+    }
+
+    await stopVoiceSession();
+  };
+
+  const endTextSession = (reason?: string) => {
+    const trialUser = authenticatedBetaUsername ?? resolveAllowedBetaUsername(username);
+    const current = trialStatus ?? getStoredTrialStatus(trialUser);
+
+    saveTrialStatus(
+      {
+        ...current,
+        activeSessionId: null
+      },
+      trialUser
+    );
+
+    sessionActiveRef.current = false;
+    setSessionActive(false);
+    if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
+      void stopVoiceSession();
+    }
+    setStatusMessage(reason ?? "Coaching session ended.");
+    setErrorMessage("");
+  };
+
+  const startApp = async () => {
+    setAuthError("");
+    setErrorMessage("");
+
+    const normalizedPassword = password.trim();
+    const resolvedUsername = resolveAllowedBetaUsername(username);
+
+    if (!resolvedUsername || normalizedPassword !== BETA_PASSWORD) {
+      setAuthError("Invalid credentials. Use username Beta1 to Beta8 and password 12345.");
+      return;
+    }
+
+    setIsAuthenticatingTrial(true);
+    try {
+      setUsername(resolvedUsername);
+      setAuthenticatedBetaUsername(resolvedUsername);
+      const trial = getStoredTrialStatus(resolvedUsername);
+      saveTrialStatus(trial, resolvedUsername);
+      setScreen("session");
+
+      if (trial.activeSessionId) {
+        sessionActiveRef.current = true;
+        setSessionActive(true);
+        setStatusMessage("Coaching session active.");
+      } else {
+        sessionActiveRef.current = false;
+        setSessionActive(false);
+        setStatusMessage(
+          trial.sessionsRemaining > 0
+            ? `Trial active. ${trial.sessionsRemaining} coaching session(s) remaining. Choose coaching mode on the coaching screen, then press Start Coaching.`
+            : "Trial limit reached: no coaching sessions remaining."
+        );
+      }
+    } finally {
+      setIsAuthenticatingTrial(false);
+    }
+  };
+
+  const openWelcome = () => {
+    if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
+      void stopVoiceSession();
+    }
+    setScreen("welcome");
+    setStatusMessage("");
+    setErrorMessage("");
+    setAuthError("");
+  };
+
+  const openCover = () => {
+    if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
+      void stopVoiceSession();
+    }
+    setScreen("cover");
+    setStatusMessage("");
+    setErrorMessage("");
+    setAuthError("");
+  };
+
+  const getResolvedRecipientName = () =>
+    deliveryName.trim() || authenticatedBetaUsername || resolveAllowedBetaUsername(username) || "Coachee";
+
+  const upsertReminder = (actionText: string, dueAtIso: string, toEmail: string) => {
+    setReminders((previous) => {
+      const existing = previous.find((item) => item.action === actionText);
+      if (existing) {
+        return previous.map((item) =>
+          item.id === existing.id
+            ? {
+                ...item,
+                dueAt: dueAtIso,
+                toEmail,
+                completedAt: null
+              }
+            : item
+        );
+      }
+
+      return [
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          action: actionText,
+          dueAt: dueAtIso,
+          toEmail,
+          createdAt: new Date().toISOString(),
+          completedAt: null,
+          browserNotifiedAt: null
+        },
+        ...previous
+      ];
+    });
+  };
+
+  const requestBrowserNotificationPermission = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setErrorMessage("Browser notifications are not supported on this device/browser.");
+      return;
+    }
+
+    try {
+      const permission = await window.Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === "granted") {
+        setStatusMessage("Browser notifications enabled.");
+      } else {
+        setErrorMessage("Browser notifications were not enabled.");
+      }
+    } catch {
+      setErrorMessage("Unable to request browser notification permission.");
+    }
+  };
+
+  const markReminderComplete = (id: string) => {
+    setReminders((previous) =>
+      previous.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              completedAt: item.completedAt ?? new Date().toISOString()
+            }
+          : item
+      )
+    );
+  };
+
+  const removeReminder = (id: string) => {
+    setReminders((previous) => previous.filter((item) => item.id !== id));
+  };
+
+  const resolveActionStartDate = (actionText: string, fallbackIndex = 0) => {
+    const actionSpecificDate = actionDueDates[actionText]?.trim() ?? "";
+    if (actionSpecificDate) {
+      const explicit = new Date(actionSpecificDate);
+      if (!Number.isNaN(explicit.getTime())) {
+        return explicit;
+      }
+    }
+
+    const baseStart = calendarStartLocal
+      ? new Date(calendarStartLocal)
+      : new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(baseStart.getTime())) {
+      return null;
+    }
+
+    return new Date(baseStart.getTime() + fallbackIndex * 24 * 60 * 60 * 1000);
+  };
+
+  const postCalendarInvite = async (toEmail: string, actionText: string, start: Date) => {
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    const response = await fetch("/api/calendar-invite", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        toEmail,
+        coacheeName: getResolvedRecipientName(),
+        actionText,
+        startAt: start.toISOString(),
+        endAt: end.toISOString()
+      })
+    });
+
+    if (response.ok) {
+      return { ok: true as const };
+    }
+
+    const data = (await response.json().catch(() => ({}))) as { error?: string; details?: string };
+    const details = data?.details ? ` ${data.details}` : "";
+    return {
+      ok: false as const,
+      error: `${data?.error ?? "Unable to send calendar invite."}${details}`.trim()
+    };
+  };
+
+  const sendActionPlanEmail = async () => {
+    const toEmail = deliveryEmail.trim();
+    if (!EMAIL_PATTERN.test(toEmail)) {
+      setErrorMessage("Enter a valid recipient email.");
+      return;
+    }
+
+    if (extractedActionItems.length === 0) {
+      setErrorMessage("No action items found to email.");
+      return;
+    }
+
+    setErrorMessage("");
+    setIsSendingPlanEmail(true);
+
+    try {
+      const response = await fetch("/api/action-plan-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          toEmail,
+          coacheeName: getResolvedRecipientName(),
+          summary: lastAssistantMessage,
+          actions: extractedActionItems
+        })
+      });
+
+      const data = (await response.json()) as { error?: string; details?: string };
+      if (!response.ok) {
+        const details = data?.details ? ` ${data.details}` : "";
+        throw new Error(`${data?.error ?? "Unable to send action plan email."}${details}`.trim());
+      }
+
+      setStatusMessage(`Action plan emailed to ${toEmail}.`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to send action plan email.");
+    } finally {
+      setIsSendingPlanEmail(false);
+    }
+  };
+
+  const sendCalendarInvite = async (actionOverride?: string, fallbackIndex = 0) => {
+    const actionText = actionOverride?.trim() || calendarAction.trim() || extractedActionItems[0] || "";
+    if (!actionText) {
+      setErrorMessage("No action selected for calendar invite.");
+      return;
+    }
+    const toEmail = deliveryEmail.trim();
+    if (!EMAIL_PATTERN.test(toEmail)) {
+      setErrorMessage("Enter a valid recipient email in Action Hub.");
+      return;
+    }
+
+    const start = resolveActionStartDate(actionText, fallbackIndex);
+    if (!start) {
+      setErrorMessage("Choose a valid date/time for calendar invite.");
+      return;
+    }
+
+    setErrorMessage("");
+    setIsSendingCalendarInvite(true);
+
+    try {
+      const result = await postCalendarInvite(toEmail, actionText, start);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      upsertReminder(actionText, start.toISOString(), toEmail);
+      setStatusMessage(`Calendar invite sent to ${toEmail}.`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to send calendar invite.");
+    } finally {
+      setIsSendingCalendarInvite(false);
+    }
+  };
+
+  const sendAllCalendarInvites = async () => {
+    if (extractedActionItems.length === 0) {
+      setErrorMessage("No action items found for calendar invites.");
+      return;
+    }
+    const toEmail = deliveryEmail.trim();
+    if (!EMAIL_PATTERN.test(toEmail)) {
+      setErrorMessage("Enter a valid recipient email in Action Hub.");
+      return;
+    }
+
+    setErrorMessage("");
+    setIsSendingAllCalendarInvites(true);
+
+    let sent = 0;
+    const failedActions: string[] = [];
+
+    for (let index = 0; index < extractedActionItems.length; index += 1) {
+      const actionText = extractedActionItems[index];
+      const start = resolveActionStartDate(actionText, index);
+      if (!start) {
+        failedActions.push(`${actionText} (invalid date)`);
+        continue;
+      }
 
       try {
-        const response = await fetch("/api/sessions?limit=20", { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data?.error ?? "Unable to load history.");
+        const result = await postCalendarInvite(toEmail, actionText, start);
+        if (!result.ok) {
+          failedActions.push(actionText);
+          continue;
         }
 
-        if (!isCurrent) {
-          return;
-        }
-
-        const nextSessions = Array.isArray(data?.sessions)
-          ? (data.sessions as SessionRecord[])
-          : [];
-        setSessions(nextSessions);
-        setHistoryStatus(nextSessions.length === 0 ? "No saved sessions yet." : "");
-      } catch (error) {
-        if (!isCurrent) {
-          return;
-        }
-        setHistoryError(error instanceof Error ? error.message : "Unable to load history.");
-        setHistoryStatus("");
+        upsertReminder(actionText, start.toISOString(), toEmail);
+        sent += 1;
+      } catch {
+        failedActions.push(actionText);
       }
-    };
+    }
 
-    loadHistory();
+    if (sent > 0) {
+      setStatusMessage(
+        `Sent ${sent} calendar invite${sent === 1 ? "" : "s"} for action reminders.`
+      );
+    }
 
-    return () => {
-      isCurrent = false;
-    };
-  }, [activeScreen]);
+    if (failedActions.length > 0) {
+      setErrorMessage(
+        `Failed to send ${failedActions.length} invite${failedActions.length === 1 ? "" : "s"}: ${failedActions.join("; ")}`
+      );
+    }
 
-  const handleChatSend = async () => {
+    setIsSendingAllCalendarInvites(false);
+  };
+
+  const sendPlanEmailAndAllCalendarInvites = async () => {
+    const toEmail = deliveryEmail.trim();
+    if (!EMAIL_PATTERN.test(toEmail)) {
+      setErrorMessage("Enter a valid recipient email.");
+      return;
+    }
+
+    if (extractedActionItems.length === 0) {
+      setErrorMessage("No action items found to send.");
+      return;
+    }
+
     setErrorMessage("");
-    setStatusMessage("");
-    setCoachMeta(null);
+    setIsSendingCombinedDelivery(true);
 
-    const trimmedInput = chatInput.trim();
+    let emailSent = false;
+    let sentInvites = 0;
+    const failedActions: string[] = [];
+
+    try {
+      const emailResponse = await fetch("/api/action-plan-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          toEmail,
+          coacheeName: getResolvedRecipientName(),
+          summary: lastAssistantMessage,
+          actions: extractedActionItems
+        })
+      });
+
+      if (emailResponse.ok) {
+        emailSent = true;
+      } else {
+        const emailData = (await emailResponse.json().catch(() => ({}))) as {
+          error?: string;
+          details?: string;
+        };
+        const details = emailData?.details ? ` ${emailData.details}` : "";
+        setErrorMessage(
+          `${emailData?.error ?? "Unable to send action plan email."}${details}`.trim()
+        );
+      }
+
+      for (let index = 0; index < extractedActionItems.length; index += 1) {
+        const actionText = extractedActionItems[index];
+        const start = resolveActionStartDate(actionText, index);
+        if (!start) {
+          failedActions.push(`${actionText} (invalid date)`);
+          continue;
+        }
+
+        try {
+          const result = await postCalendarInvite(toEmail, actionText, start);
+          if (!result.ok) {
+            failedActions.push(actionText);
+            continue;
+          }
+
+          upsertReminder(actionText, start.toISOString(), toEmail);
+          sentInvites += 1;
+        } catch {
+          failedActions.push(actionText);
+        }
+      }
+
+      const statusParts: string[] = [];
+      statusParts.push(emailSent ? "Action plan email sent." : "Action plan email failed.");
+      statusParts.push(
+        `Calendar invites sent: ${sentInvites}/${extractedActionItems.length}.`
+      );
+      setStatusMessage(statusParts.join(" "));
+
+      if (failedActions.length > 0) {
+        setErrorMessage(
+          `Failed invites for ${failedActions.length} action${failedActions.length === 1 ? "" : "s"}: ${failedActions.join("; ")}`
+        );
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Combined send failed.");
+    } finally {
+      setIsSendingCombinedDelivery(false);
+    }
+  };
+
+  const handleAssistantToolCalls = async (toolCalls: AssistantToolCall[], assistantContextText: string) => {
+    if (!toolCalls.length) {
+      return;
+    }
+
+    const dedupedCalls = Array.from(
+      new Map(toolCalls.map((toolCall) => [`${normalizeToolCallName(toolCall.name)}:${toolCall.raw}`, toolCall])).values()
+    );
+
+    let savedPlanActions = 0;
+    let shouldEndSession = false;
+
+    for (const toolCall of dedupedCalls) {
+      const name = normalizeToolCallName(toolCall.name);
+
+      if (name === "save_action_plan") {
+        const planItems = extractPlanItemsFromToolPayload(toolCall.payload);
+        setExecutionToolsEnabled(true);
+
+        if (planItems.length > 0) {
+          const actionOnlyItems = planItems.map((item) => item.action.trim()).filter(Boolean);
+          const signature = actionOnlyItems.map((item) => item.toLowerCase()).join("||");
+          pendingPlanSignatureRef.current = signature;
+          pendingPlanItemsRef.current = actionOnlyItems;
+          pendingPlanAssistantIndexRef.current = Math.max(0, chatMessagesRef.current.length - 1);
+
+          const latestUserMessage =
+            [...chatMessagesRef.current]
+              .reverse()
+              .find((message) => message.role === "user")?.content ?? "";
+          const alreadyAgreed =
+            Boolean(latestUserMessage) &&
+            PLAN_APPROVAL_PATTERN.test(latestUserMessage) &&
+            !PLAN_REJECTION_PATTERN.test(latestUserMessage);
+
+          if (alreadyAgreed) {
+            savedPlanActions += planItems.length;
+            appliedPlanSignatureRef.current = signature;
+            pendingPlanSignatureRef.current = "";
+            pendingPlanItemsRef.current = [];
+            pendingPlanAssistantIndexRef.current = -1;
+          }
+        }
+      } else if (name === "end_session") {
+        shouldEndSession = true;
+      }
+    }
+
+    if (savedPlanActions > 0) {
+      setStatusMessage(
+        `Tool call handled: save_action_plan (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
+      );
+    } else if (dedupedCalls.some((toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan")) {
+      setStatusMessage("Tool call handled: save_action_plan (pending coachee agreement).");
+    }
+
+    if (shouldEndSession && sessionActive) {
+      endTextSession(resolveCoachEndingMessage(assistantContextText));
+    }
+  };
+
+  const resolveCoachEndingMessage = (assistantText: string) => {
+    const trimmed = assistantText.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+    return COACH_ENDING_MESSAGE;
+  };
+
+  const sendChatMessage = async (inputText: string) => {
+    setErrorMessage("");
+
+    const trimmedInput = inputText.trim();
     if (!trimmedInput) {
       setErrorMessage("Add a message to send.");
       return;
     }
 
-    const nextMessages: ChatMessage[] = [...chatMessages, { role: "user" as const, content: trimmedInput }];
-    setChatMessages(nextMessages);
-    setChatInput("");
+    if (!sessionActive) {
+      setErrorMessage("Start Coaching to send messages.");
+      return;
+    }
+
+    if (PLAN_INTENT_PATTERN.test(trimmedInput) && !PLAN_NEGATIVE_PATTERN.test(trimmedInput)) {
+      setExecutionToolsEnabled(true);
+    }
+
     setIsChatting(true);
-    setStatusMessage("Thinking...");
+
+    const nextMessages: ChatMessage[] = [...chatMessagesRef.current, { role: "user", content: trimmedInput }];
+    setChatMessages(nextMessages);
+    chatMessagesRef.current = nextMessages;
+    setChatInput("");
 
     try {
+      const isLiveVoiceTurn = coachingStartMode === "voice" && voiceChannelStatus === "connected";
+      if (isLiveVoiceTurn) {
+        elevenConversation.sendUserMessage(trimmedInput);
+        setStatusMessage("Sent to voice coach.");
+        return;
+      }
+
+      if (coachingStartMode === "voice" && voiceChannelStatus !== "connected") {
+        setStatusMessage("Voice channel is not connected. Sending this turn as text.");
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify({
           messages: nextMessages,
           context: conversationContext,
-          style: coacheeStyle,
-          nowState: {
-            stressLevel,
-            challengeReadiness,
-            confidenceLevel,
-            pacePreference
-          }
+          coachGender,
+          style: "balanced"
         })
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as {
+        text?: string;
+        endSession?: boolean;
+        error?: string;
+      };
+
       if (!response.ok) {
-        throw new Error(data?.error ?? "Chat request failed.");
+        throw new Error(data?.error ?? "Unable to send message.");
       }
 
-      const parsed = parseCoachJson(data?.text ?? "");
-      const assistantMessage = parsed.question ?? "";
-      setChatMessages([...nextMessages, { role: "assistant" as const, content: assistantMessage }]);
-      setCoachMeta(parsed);
-      setStatusMessage("Response ready.");
+      const assistantRaw = String(data?.text ?? "");
+      const toolEnvelope = extractAssistantToolCalls(assistantRaw);
+      const assistantText = (toolEnvelope.displayText || assistantRaw).trim();
+
+      if (assistantText) {
+        const updatedMessages = [...nextMessages, { role: "assistant" as const, content: assistantText }];
+        setChatMessages(updatedMessages);
+        chatMessagesRef.current = updatedMessages;
+      }
+
+      if (toolEnvelope.toolCalls.length > 0) {
+        await handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText || assistantRaw);
+      }
+
+      if (data?.endSession) {
+        endTextSession(resolveCoachEndingMessage(assistantText || assistantRaw));
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
-      setStatusMessage("");
+      setErrorMessage(error instanceof Error ? error.message : "Unable to send message.");
     } finally {
       setIsChatting(false);
     }
   };
 
-  const handleSaveSession = async () => {
-    setErrorMessage("");
-    setStatusMessage("");
-
-    if (chatMessages.length <= 1) {
-      setErrorMessage("Add at least one message before saving.");
-      return;
-    }
-
-    setIsSavingSession(true);
-
-    try {
-      const response = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: contextLabel,
-          context: conversationContext,
-          style: coacheeStyle,
-          nowState: {
-            stressLevel,
-            challengeReadiness,
-            confidenceLevel,
-            pacePreference
-          },
-          messages: chatMessages,
-          summary: defaultSummary
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error ?? "Session save failed.");
-      }
-
-      setSessions((previous) => {
-        const filtered = previous.filter((session) => session.id !== data.id);
-        return [data as SessionRecord, ...filtered];
-      });
-      setSelectedSession(data as SessionRecord);
-      setStatusMessage("Session saved.");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to save session.");
-      setStatusMessage("");
-    } finally {
-      setIsSavingSession(false);
-    }
-  };
-
-  const handleSpeakResponse = async () => {
-    setErrorMessage("");
-    setStatusMessage("");
-
-    if (!displayCoachOutput) {
-      setErrorMessage("Generate or enter a response before speaking.");
-      return;
-    }
-
-    setIsSpeaking(true);
-    setStatusMessage("Synthesizing voice...");
-
-    try {
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: displayCoachOutput })
-      });
-
-      if (!response.ok) {
-        const errorPayload = await response.json();
-        throw new Error(errorPayload?.error ?? "TTS request failed.");
-      }
-
-      const audioBlob = await response.blob();
-      const nextUrl = URL.createObjectURL(audioBlob);
-      setAudioUrl((previous) => {
-        if (previous) {
-          URL.revokeObjectURL(previous);
-        }
-        return nextUrl;
-      });
-
-      const audio = new Audio(nextUrl);
-      await audio.play();
-      setStatusMessage("Playing audio.");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to play audio.");
-      setStatusMessage("");
-    } finally {
-      setIsSpeaking(false);
-    }
-  };
-
-  const handleAudioUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    setErrorMessage("");
-    setStatusMessage("Transcribing audio...");
-    setIsTranscribing(true);
-
-    try {
-      const form = new FormData();
-      form.append("file", file);
-
-      const response = await fetch("/api/stt", {
-        method: "POST",
-        body: form
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error ?? "STT request failed.");
-      }
-
-      setChatInput(data?.text ?? "");
-      setStatusMessage("Transcription added to the message box.");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to transcribe audio.");
-      setStatusMessage("");
-    } finally {
-      setIsTranscribing(false);
-      event.target.value = "";
-    }
-  };
-
-  const startRecording = async () => {
-    setErrorMessage("");
-    setStatusMessage("");
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-
-        if (audioChunksRef.current.length === 0) {
-          setStatusMessage("");
-          return;
-        }
-
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        setStatusMessage("Transcribing...");
-        setIsTranscribing(true);
-
-        try {
-          const form = new FormData();
-          form.append("file", audioBlob, "recording.webm");
-
-          const response = await fetch("/api/stt", {
-            method: "POST",
-            body: form
-          });
-
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data?.error ?? "STT request failed.");
-          }
-
-          setChatInput(data?.text ?? "");
-          setStatusMessage("Transcription ready. Press Send or Enter.");
-        } catch (error) {
-          setErrorMessage(error instanceof Error ? error.message : "Unable to transcribe.");
-          setStatusMessage("");
-        } finally {
-          setIsTranscribing(false);
-        }
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-      setStatusMessage("Recording... Release to stop.");
-    } catch (error) {
-      setErrorMessage("Microphone access denied or unavailable.");
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
-    setIsRecording(false);
+  const handleChatSend = () => {
+    void sendChatMessage(chatInput);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       handleChatSend();
     }
   };
 
-  // Auto-scroll transcript when new messages arrive
-  useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  const handleResponseAction = (actionId: string) => {
+    if (actionId === "create-action-plan") {
+      void sendChatMessage("Please create an action plan for me.");
+      return;
     }
-  }, [chatMessages]);
 
-  // Auto-TTS when assistant responds and voice replies enabled
-  useEffect(() => {
-    const lastMessage = chatMessages[chatMessages.length - 1];
-    if (
-      voiceRepliesEnabled &&
-      lastMessage?.role === "assistant" &&
-      lastMessage.content &&
-      !isChatting &&
-      chatMessages.length > 1
-    ) {
-      handleSpeakResponse();
+    if (actionId === "refer-to-hr") {
+      void sendChatMessage("Please refer this topic to an HR specialist.");
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, isChatting]);
+
+    if (actionId === "end-session") {
+      endTextSession(COACH_ENDING_MESSAGE);
+      return;
+    }
+  };
+
+  const responseActions = [
+    { id: "create-action-plan", label: "Create action plan" },
+    { id: "refer-to-hr", label: "Refer to HR specialist" },
+    { id: "end-session", label: "End coaching" }
+  ];
 
   return (
-    <div className="page">
-      <header className="site-header">
-        <div className="brand">
-          <div className="brand-mark">AC</div>
-          <div>
-            <p className="brand-title">Agentic Coach</p>
-            <p className="brand-subtitle">Real-time coaching, grounded in presence.</p>
-          </div>
-        </div>
-        <nav className="nav-tabs" aria-label="Screens">
-          {screens.map((screen) => (
-            <button
-              key={screen.id}
-              className={`tab ${activeScreen === screen.id ? "is-active" : ""}`}
-              onClick={() => setActiveScreen(screen.id)}
-              aria-pressed={activeScreen === screen.id}
-              type="button"
-            >
-              {screen.label}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      <main className="shell">
-        <section
-          id="onboarding"
-          className={`screen ${activeScreen === "onboarding" ? "is-active" : ""}`}
-          aria-labelledby="onboarding-title"
-        >
-          <div className="screen-header">
-            <p className="eyebrow">Start here</p>
-            <h1 id="onboarding-title">Set the context for your coaching.</h1>
-            <p className="lead">
-              Share a few details so your sessions feel relevant, focused, and useful.
-            </p>
-          </div>
-          <div className="panel grid-two" data-reveal>
-            <form className="form-card" aria-label="Profile form">
-              <div className="field">
-                <label htmlFor="name">Full name</label>
-                <input id="name" type="text" placeholder="Asif Khan" />
-              </div>
-              <div className="field">
-                <label htmlFor="company">Company</label>
-                <input id="company" type="text" placeholder="IBM" />
-              </div>
-              <div className="field">
-                <label htmlFor="role">Role</label>
-                <input id="role" type="text" placeholder="Associate Partner" />
-              </div>
-              <div className="field">
-                <label htmlFor="grade">Grade</label>
-                <input id="grade" type="text" placeholder="B10" />
-              </div>
-              <div className="field">
-                <label htmlFor="manager">Manager name</label>
-                <input id="manager" type="text" placeholder="Justin Gatenby" />
-              </div>
-              <div className="field">
-                <label htmlFor="manager-email">Manager email</label>
-                <input id="manager-email" type="email" placeholder="name@company.com" />
-              </div>
-              <button
-                className="primary"
-                type="button"
-                onClick={() => setActiveScreen("intake")}
-              >
-                Save and continue
-              </button>
-            </form>
-            <aside className="side-card">
-              <h2>What gets stored</h2>
-              <ul>
-                <li>Profile data stays private and encrypted.</li>
-                <li>Used only to personalize tone and follow-up.</li>
-                <li>No personality labels are shown to you.</li>
-              </ul>
-              <div className="pill-row">
-                <span className="pill">Private</span>
-                <span className="pill">Encrypted</span>
-                <span className="pill">User-controlled</span>
-              </div>
-            </aside>
-          </div>
-        </section>
-
-        <section
-          id="intake"
-          className={`screen ${activeScreen === "intake" ? "is-active" : ""}`}
-          aria-labelledby="intake-title"
-        >
-          <div className="screen-header">
-            <p className="eyebrow">Optional</p>
-            <h1 id="intake-title">Style intake (2 minutes).</h1>
-            <p className="lead">
-              Pick what helps you think clearly. We will match pace, tone, and challenge.
-            </p>
-          </div>
-          <div className="panel grid-two" data-reveal>
-            <div className="form-card">
-              <div className="question-block">
-                <p className="question">When you are under pressure, you prefer...</p>
-                <div className="choices">
-                  <button
-                    className={`choice ${coacheeStyle === "direct" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("direct")}
-                  >
-                    Direct, concise feedback
-                  </button>
-                  <button
-                    className={`choice ${coacheeStyle === "balanced" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("balanced")}
-                  >
-                    Balanced feedback with options
-                  </button>
-                  <button
-                    className={`choice ${coacheeStyle === "warm" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("warm")}
-                  >
-                    Gentle pacing and support
-                  </button>
-                </div>
-              </div>
-              <div className="question-block">
-                <p className="question">Decision style</p>
-                <div className="choices">
-                  <button
-                    className={`choice ${coacheeStyle === "analytical" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("analytical")}
-                  >
-                    Data-first
-                  </button>
-                  <button
-                    className={`choice ${coacheeStyle === "warm" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("warm")}
-                  >
-                    People-first
-                  </button>
-                  <button
-                    className={`choice ${coacheeStyle === "direct" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setCoacheeStyle("direct")}
-                  >
-                    Speed-first
-                  </button>
-                </div>
-              </div>
-              <div className="question-block">
-                <p className="question">Pace preference</p>
-                <div className="choices">
-                  <button
-                    className={`choice ${pacePreference === "fast" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setPacePreference("fast")}
-                  >
-                    Fast and focused
-                  </button>
-                  <button
-                    className={`choice ${pacePreference === "moderate" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setPacePreference("moderate")}
-                  >
-                    Moderate and steady
-                  </button>
-                  <button
-                    className={`choice ${pacePreference === "slow" ? "is-selected" : ""}`}
-                    type="button"
-                    onClick={() => setPacePreference("slow")}
-                  >
-                    Slow and reflective
-                  </button>
-                </div>
-              </div>
-              <div className="button-row">
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => setActiveScreen("home")}
-                >
-                  Skip
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  onClick={() => setActiveScreen("home")}
-                >
-                  Save preferences
-                </button>
-              </div>
-            </div>
-            <aside className="side-card accent">
-              <h2>Live style signals</h2>
-              <p>
-                Derived from your responses and language. Used to subtly tune
-                questions and adapt to context.
-              </p>
-              <div className="signal">
-                <span>Directness</span>
-                <div className="bar">
-                  <span style={{ width: "72%" }} />
-                </div>
-              </div>
-              <div className="signal">
-                <span>Pace</span>
-                <div className="bar">
-                  <span style={{ width: "58%" }} />
-                </div>
-              </div>
-              <div className="signal">
-                <span>Challenge level</span>
-                <div className="bar">
-                  <span style={{ width: "40%" }} />
-                </div>
-              </div>
-              <p className="caption">Signals are internal guidance, not labels.</p>
-              <div className="preview">
-                <h3>Preview</h3>
-                <div className="field">
-                  <label htmlFor="context-preview">Preview context</label>
-                  <select
-                    id="context-preview"
-                    value={conversationContext}
-                    onChange={(event) => setConversationContext(event.target.value)}
-                  >
-                    {conversationContexts.map((context) => (
-                      <option key={context.id} value={context.id}>
-                        {context.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="preview-label">Prompt</p>
-                <p className="preview-text">{promptText}</p>
-                <p className="preview-label">Coach response</p>
-                <p className="preview-text">{coachResponse}</p>
-              </div>
-            </aside>
-          </div>
-        </section>
-
-        <section
-          id="home"
-          className={`screen ${activeScreen === "home" ? "is-active" : ""}`}
-          aria-labelledby="home-title"
-        >
-          <div className="panel hero" data-reveal>
+    <div className="app">
+      {screen !== "cover" ? (
+        <header className="topbar">
+          <div className="brand">
+            <div className="brand-mark">AC</div>
             <div>
-              <p className="eyebrow">Welcome back</p>
-              <h1 id="home-title">Ready to coach in the moment?</h1>
-              <p className="lead">
-                Speak or type. We keep the session present, supportive, and
-                focused on ownership.
-              </p>
-              <div className="button-row">
-                <button
-                  className="primary"
-                  type="button"
-                  onClick={() => setActiveScreen("session")}
-                >
-                  Start coaching
-                </button>
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => setActiveScreen("history")}
-                >
-                  View history
-                </button>
-              </div>
-            </div>
-            <div className="hero-card">
-              <div className="metric">
-                <p>Supportive / Direct Mix</p>
-                <strong>70 / 30</strong>
-              </div>
-              <div className="metric">
-                <p>Current focus</p>
-                <strong>Leadership presence</strong>
-              </div>
-              <div className="metric">
-                <p>Next prompt style</p>
-                <strong>Catalytic, calm</strong>
-              </div>
+              <h1 className="brand-title">Agentic Coach</h1>
+              <p className="brand-subtitle">Action-focused coaching for mobile and desktop.</p>
             </div>
           </div>
-        </section>
+        </header>
+      ) : null}
 
-        <section
-          id="session"
-          className={`screen ${activeScreen === "session" ? "is-active" : ""}`}
-          aria-labelledby="session-title"
-        >
-          <div className="screen-header">
-            <p className="eyebrow">Live session</p>
-            <h1 id="session-title">We stay with what matters now.</h1>
-          </div>
-          <div className="panel session-grid" data-reveal>
-            <div className="session-main">
-              <div className="controls">
-                <button
-                  className={`mic ${isRecording ? "is-recording" : ""}`}
-                  type="button"
-                  onMouseDown={startRecording}
-                  onMouseUp={stopRecording}
-                  onMouseLeave={stopRecording}
-                  onTouchStart={startRecording}
-                  onTouchEnd={stopRecording}
-                  disabled={isTranscribing}
-                >
-                  <span className="mic-ring" />
-                  <span className="mic-core" />
-                  <span className="mic-label">
-                    {isRecording ? "Recording..." : isTranscribing ? "Transcribing..." : "Hold to speak"}
-                  </span>
-                </button>
-                <div className="toggle-row">
-                  <label className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={voiceRepliesEnabled}
-                      onChange={(e) => setVoiceRepliesEnabled(e.target.checked)}
-                    />
-                    <span>Voice replies</span>
-                  </label>
-                  <label className="toggle">
-                    <input type="checkbox" />
-                    <span>More direct</span>
-                  </label>
-                </div>
+      <main className={`shell ${screen === "cover" ? "shell--cover" : ""}`}>
+        {screen === "cover" ? (
+          <section className="ec-cover">
+            <header className="ec-header">
+              <button type="button" className="ec-enter-btn" onClick={openWelcome}>
+                Enter
+              </button>
+            </header>
+
+            <section className="ec-hero">
+              <div className="ec-hero-content">
+                <h1>
+                  World-Class Leadership.
+                  <br />
+                  Locally Rooted.
+                </h1>
+                <p>
+                  Evidence-based executive coaching designed for visionaries shaping the future of the Gulf.
+                  The Agentic Coaching Engine is built by executive coaches with more than 10,000 hours of
+                  executive coaching experience across the GCC, EU, and US.
+                </p>
+                <Button type="button" onClick={openWelcome}>
+                  Start coaching
+                </Button>
               </div>
-              <div className="transcript" ref={transcriptRef}>
-                <h2>Transcript</h2>
-                {chatMessages.length === 0 ? (
-                  <p className="caption">No messages yet.</p>
-                ) : (
-                  chatMessages.map((message, index) => (
+              <div className="ec-hero-image-container">
+                <img
+                  src="/cover-saudi-coaching.jpg"
+                  alt="Saudi male and female in a coaching discussion"
+                  className="ec-hero-image"
+                />
+              </div>
+            </section>
+          </section>
+        ) : null}
+
+        {screen === "welcome" ? (
+          <section className="welcome-grid">
+            <Card>
+              <CardHeader>
+                <CardTitle>Start Here</CardTitle>
+                <CardDescription>Use beta credentials to continue to the coaching screen.</CardDescription>
+              </CardHeader>
+              <CardContent className="form-grid">
+                <div className="field">
+                  <Label htmlFor="username">Username (beta)</Label>
+                  <Input id="username" value={username} onChange={(event) => setUsername(event.target.value)} />
+                </div>
+                <div className="field">
+                  <Label htmlFor="password">Password (beta)</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                  />
+                </div>
+
+                <p className="info">Use username `Beta1` to `Beta8` and password `12345`.</p>
+                {authError ? <p className="error">{authError}</p> : null}
+
+                <div className="inline-actions">
+                  <Button type="button" onClick={() => void startApp()} disabled={isAuthenticatingTrial}>
+                    {isAuthenticatingTrial ? "Authenticating..." : "Start Coaching"}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={openCover}>
+                    Back
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </section>
+        ) : null}
+
+        {screen === "session" ? (
+          <section className="session-grid">
+            <Card>
+              <CardHeader>
+                <div className="coach-intro">
+                  <div className={`coach-avatar ${sessionActive ? "active" : ""}`}>
+                    <img src={selectedCoach.avatarSrc} alt={selectedCoach.avatarAlt} />
+                  </div>
+                  <div className="coach-meta">
+                    <p className="coach-label">Your coach</p>
+                    <p className="coach-name">{selectedCoach.displayName}</p>
+                    <div className="coach-selector">
+                      <Label htmlFor="coach-gender">Coach gender</Label>
+                      <Select
+                        id="coach-gender"
+                        value={coachGender}
+                        onChange={(event) => setCoachGender(event.target.value as CoachGender)}
+                      >
+                        {(Object.keys(coachProfiles) as CoachGender[]).map((gender) => (
+                          <option key={gender} value={gender}>
+                            {coachProfiles[gender].label}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+
+                <CardTitle>Live coaching dialogue</CardTitle>
+                <CardDescription>
+                  Two-way coaching conversation. Choose text or live voice mode.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent>
+                <div className="session-controls-bar">
+                  <div className="inline-actions">
+                    <Button
+                      type="button"
+                      variant={coachingStartMode === "text" ? "default" : "outline"}
+                      onClick={() => setCoachingStartMode("text")}
+                      disabled={sessionActive}
+                    >
+                      Coach by text
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={coachingStartMode === "voice" ? "default" : "outline"}
+                      onClick={() => setCoachingStartMode("voice")}
+                      disabled={sessionActive}
+                    >
+                      Coaching by voice
+                    </Button>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={sessionActive ? "destructive" : "default"}
+                    onClick={() =>
+                      sessionActive
+                        ? endTextSession("Coaching session ended.")
+                        : void startSelectedSession()
+                    }
+                    disabled={!sessionActive && (trialStatus?.sessionsRemaining ?? 0) <= 0}
+                  >
+                    {sessionActive
+                      ? "End Coaching"
+                      : (trialStatus?.sessionsRemaining ?? 0) <= 0
+                      ? "Trial Complete"
+                      : "Start Coaching"}
+                  </Button>
+                  {sessionActive && coachingStartMode === "voice" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        voiceAutoConnectAttemptedRef.current = false;
+                        void startVoiceSession();
+                      }}
+                      disabled={voiceChannelStatus === "connecting"}
+                    >
+                      {voiceChannelStatus === "connected" ? "Reconnect voice" : "Connect voice"}
+                    </Button>
+                  ) : null}
+
+                  <div className="session-metrics">
+                    <span className="session-pill">
+                      Mode: {coachingStartMode === "voice" ? "Voice (live)" : "Text"}
+                    </span>
+                    {coachingStartMode === "voice" ? (
+                      <span className="session-pill">
+                        Voice: {voiceChannelStatus}
+                        {voiceChannelStatus === "connected"
+                          ? isVoiceAgentSpeaking
+                            ? " (coach speaking)"
+                            : " (coach listening)"
+                          : ""}
+                      </span>
+                    ) : null}
+                    <span className="session-pill">Trial sessions left: {trialStatus?.sessionsRemaining ?? 0}</span>
+                  </div>
+                </div>
+
+                <div className="controls-row">
+                  <div className="field">
+                    <Label htmlFor="context">Context</Label>
+                    <Select
+                      id="context"
+                      value={conversationContext}
+                      onChange={(event) =>
+                        setConversationContext(
+                          event.target.value as (typeof conversationContexts)[number]["id"]
+                        )
+                      }
+                    >
+                      {conversationContexts.map((context) => (
+                        <option key={context.id} value={context.id}>
+                          {context.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                </div>
+
+                <p className="info">
+                  {sessionActive
+                    ? coachingStartMode === "voice"
+                      ? voiceChannelStatus === "connected"
+                        ? "Coaching session active. Speak naturally or type and send."
+                        : voiceChannelStatus === "connecting"
+                        ? "Coaching session active. Voice channel is connecting."
+                        : "Coaching session active. Voice channel disconnected. Use Connect voice or continue by text."
+                      : "Coaching session active. Type your response and send."
+                    : "Choose coaching mode, then press Start Coaching to begin."}
+                </p>
+
+                <div className="transcript" ref={transcriptRef}>
+                  {chatMessages.map((message, index) => (
                     <div
                       key={`${message.role}-${index}`}
-                      className={`bubble ${message.role === "assistant" ? "coach" : "user"}`}
+                      className={`message ${message.role === "assistant" ? "assistant" : "user"}`}
                     >
-                      {message.content}
+                      {message.role === "assistant" ? (
+                        <div className="md-content">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                        </div>
+                      ) : (
+                        <p>{message.content}</p>
+                      )}
                     </div>
-                  ))
-                )}
-              </div>
-              <div className="coach-reply">
-                <h2>Coach response</h2>
-                <p className="lead">{displayCoachOutput}</p>
-                {coachMeta ? (
-                  <div className="coach-meta">
-                    <span className="pill">{coachMeta.heron_mode ?? "supportive"}</span>
-                    <span className="pill">{coachMeta.push_pull ?? "pull"}</span>
-                    <span className="pill">intensity {coachMeta.intensity ?? 1}</span>
-                    <span className="pill">{coachMeta.gestalt_move ?? "none"}</span>
-                  </div>
-                ) : null}
-                {coachMeta?.action_focus ? (
-                  <p className="caption">Action focus: {coachMeta.action_focus}</p>
-                ) : null}
-                <div className="button-row">
-                  <button
-                    className="ghost"
-                    type="button"
-                    onClick={handleSpeakResponse}
-                    disabled={isSpeaking || !displayCoachOutput}
-                  >
-                    {isSpeaking ? "Speaking..." : "Speak response"}
-                  </button>
+                  ))}
                 </div>
-              </div>
-              <div className="demo-controls">
-                <h2>Live chat</h2>
-                <div className="field">
-                  <label htmlFor="user-text">Your message</label>
-                  <textarea
+
+                <h3 className="section-subtitle">Short cut buttons</h3>
+                <div className="action-grid">
+                  {responseActions.map((action) => (
+                    <Button
+                      key={action.id}
+                      type="button"
+                      variant={action.id === "refer-to-hr" ? "destructive" : "outline"}
+                      onClick={() => handleResponseAction(action.id)}
+                      disabled={isChatting || !sessionActive}
+                    >
+                      {action.label}
+                    </Button>
+                  ))}
+                </div>
+
+                <div className="composer">
+                  <Label htmlFor="user-text">Your message</Label>
+                  <Textarea
                     id="user-text"
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Type a message or hold the mic button to speak. Press Enter to send."
+                    placeholder="Type your coaching response here."
                     rows={4}
                   />
+                  <div className="inline-actions">
+                    <Button type="button" onClick={handleChatSend} disabled={isChatting || !sessionActive}>
+                      {isChatting ? "Sending..." : "Send message"}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={openWelcome}>
+                      Log out
+                    </Button>
+                  </div>
                 </div>
-                <div className="button-row">
-                  <button
-                    className="primary"
-                    type="button"
-                    onClick={handleChatSend}
-                    disabled={isChatting}
-                  >
-                    {isChatting ? "Sending..." : "Send message"}
-                  </button>
-                </div>
-                <div className="field">
-                  <label htmlFor="audio-upload">Upload audio for transcription</label>
-                  <input
-                    id="audio-upload"
-                    type="file"
-                    accept="audio/*"
-                    onChange={handleAudioUpload}
-                    disabled={isTranscribing}
-                  />
-                </div>
+
                 {statusMessage ? <p className="status">{statusMessage}</p> : null}
                 {errorMessage ? <p className="error">{errorMessage}</p> : null}
-                {audioUrl ? <audio controls src={audioUrl} /> : null}
-              </div>
-            </div>
+              </CardContent>
+            </Card>
 
-            <aside className="session-side">
-              <div className="side-card">
-                <h2>Adaptive drivers</h2>
-                <div className="field">
-                  <label htmlFor="style-select">Coachee style</label>
-                  <select
-                    id="style-select"
-                    value={coacheeStyle}
-                    onChange={(event) => setCoacheeStyle(event.target.value)}
-                  >
-                    {coacheeStyles.map((style) => (
-                      <option key={style.id} value={style.id}>
-                        {style.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="context-select">Conversation context</label>
-                  <select
-                    id="context-select"
-                    value={conversationContext}
-                    onChange={(event) => setConversationContext(event.target.value)}
-                  >
-                    {conversationContexts.map((context) => (
-                      <option key={context.id} value={context.id}>
-                        {context.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="pace-select">Pace preference</label>
-                  <select
-                    id="pace-select"
-                    value={pacePreference}
-                    onChange={(event) => setPacePreference(event.target.value)}
-                  >
-                    {pacePreferences.map((preference) => (
-                      <option key={preference.id} value={preference.id}>
-                        {preference.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="stress-select">Stress level</label>
-                  <select
-                    id="stress-select"
-                    value={stressLevel}
-                    onChange={(event) => setStressLevel(event.target.value)}
-                  >
-                    {stressLevels.map((level) => (
-                      <option key={level.id} value={level.id}>
-                        {level.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="readiness-select">Challenge readiness</label>
-                  <select
-                    id="readiness-select"
-                    value={challengeReadiness}
-                    onChange={(event) => setChallengeReadiness(event.target.value)}
-                  >
-                    {readinessLevels.map((level) => (
-                      <option key={level.id} value={level.id}>
-                        {level.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="confidence-select">Confidence level</label>
-                  <select
-                    id="confidence-select"
-                    value={confidenceLevel}
-                    onChange={(event) => setConfidenceLevel(event.target.value)}
-                  >
-                    {confidenceLevels.map((level) => (
-                      <option key={level.id} value={level.id}>
-                        {level.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="caption">
-                  Prompt basis: {styleLabel} + {contextLabel}
-                </p>
-                <p className="caption">
-                  Context signals: {stressLabel} stress, {readinessLabel} readiness,{" "}
-                  {confidenceLabel} confidence, {paceLabel} pace
-                </p>
-              </div>
-              <div className="side-card">
-                <h2>Now state</h2>
-                <div className="state-row">
-                  <span>Emotion</span>
-                  <strong>Frustrated</strong>
-                </div>
-                <div className="state-row">
-                  <span>Stress level</span>
-                  <strong>{stressLabel}</strong>
-                </div>
-                <div className="state-row">
-                  <span>Challenge readiness</span>
-                  <strong>{readinessLabel}</strong>
-                </div>
-                <div className="state-row">
-                  <span>Confidence</span>
-                  <strong>{confidenceLabel}</strong>
-                </div>
-              </div>
-              <div className="side-card">
-                <h2>Heron mix</h2>
-                <div className="signal">
-                  <span>Pull</span>
-                  <div className="bar">
-                    <span style={{ width: "68%" }} />
-                  </div>
-                </div>
-                <div className="signal">
-                  <span>Push</span>
-                  <div className="bar">
-                    <span style={{ width: "32%" }} />
-                  </div>
-                </div>
-                <div className="pill-row">
-                  <span className="pill">Catalytic</span>
-                  <span className="pill">Supportive</span>
-                </div>
-              </div>
-              <div className="side-card accent">
-                <h2>Internal style panel</h2>
-                <p>Visible only to internal reviewers.</p>
-                <div className="signal">
-                  <span>Primary style</span>
-                  <div className="bar">
-                    <span style={{ width: "74%" }} />
-                  </div>
-                </div>
-                <div className="signal">
-                  <span>Feedback preference</span>
-                  <div className="bar">
-                    <span style={{ width: "46%" }} />
-                  </div>
-                </div>
-              </div>
-            </aside>
-          </div>
-          <div className="button-row" data-reveal>
-            <button
-              className="ghost"
-              type="button"
-              onClick={() => setActiveScreen("home")}
-            >
-              Pause
-            </button>
-            <button
-              className="primary"
-              type="button"
-              onClick={() => setActiveScreen("summary")}
-            >
-              End session
-            </button>
-          </div>
-        </section>
+            <div>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Action Hub</CardTitle>
+                  <CardDescription>Action plans requested during coaching are shown here.</CardDescription>
+                </CardHeader>
+                <CardContent className="form-grid">
+                  {!executionToolsEnabled ? (
+                    <p className="info">
+                      Action Hub is clear until an action plan is requested via `Create action plan`.
+                    </p>
+                  ) : extractedActionItems.length === 0 ? (
+                    <p className="info">Action plan requested. Waiting for plan items from the coach response.</p>
+                  ) : (
+                    <>
+                      <div className="field">
+                        <Label htmlFor="delivery-email">Recipient email</Label>
+                        <Input
+                          id="delivery-email"
+                          type="email"
+                          value={deliveryEmail}
+                          onChange={(event) => setDeliveryEmail(event.target.value)}
+                          placeholder="name@company.com"
+                        />
+                      </div>
+                      <div className="action-hub-list">
+                        {extractedActionItems.map((item, index) => (
+                          <div key={item} className="action-hub-item">
+                            <div>
+                              <p className="action-hub-text">{item}</p>
+                              <div className="field" style={{ marginTop: "0.5rem" }}>
+                                <Label htmlFor={`action-date-${index}`}>Reminder date/time</Label>
+                                <Input
+                                  id={`action-date-${index}`}
+                                  type="datetime-local"
+                                  value={actionDueDates[item] ?? ""}
+                                  onChange={(event) =>
+                                    setActionDueDates((previous) => ({
+                                      ...previous,
+                                      [item]: event.target.value
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </div>
+                            <div className="action-hub-menu">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void sendCalendarInvite(item, index)}
+                                disabled={
+                                  isSendingCalendarInvite ||
+                                  isSendingAllCalendarInvites ||
+                                  isSendingCombinedDelivery
+                                }
+                              >
+                                {isSendingCalendarInvite ? "Sending..." : "Send invite"}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="field">
+                        <Label htmlFor="delivery-name">Recipient name (optional)</Label>
+                        <Input
+                          id="delivery-name"
+                          value={deliveryName}
+                          onChange={(event) => setDeliveryName(event.target.value)}
+                          placeholder="Coachee name"
+                        />
+                      </div>
+                      <div className="field">
+                        <Label htmlFor="calendar-action">Action for calendar invite</Label>
+                        <Select
+                          id="calendar-action"
+                          value={calendarAction}
+                          onChange={(event) => setCalendarAction(event.target.value)}
+                        >
+                          {extractedActionItems.map((action) => (
+                            <option key={action} value={action}>
+                              {action}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                      <div className="field">
+                        <Label htmlFor="calendar-start">Calendar time (optional)</Label>
+                        <Input
+                          id="calendar-start"
+                          type="datetime-local"
+                          value={calendarStartLocal}
+                          onChange={(event) => setCalendarStartLocal(event.target.value)}
+                        />
+                      </div>
+                      <div className="inline-actions">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void sendActionPlanEmail()}
+                          disabled={isSendingPlanEmail}
+                        >
+                          {isSendingPlanEmail ? "Sending email..." : "Email action plan"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void sendCalendarInvite()}
+                          disabled={isSendingCalendarInvite}
+                        >
+                          {isSendingCalendarInvite ? "Sending invite..." : "Send to calendar"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void sendAllCalendarInvites()}
+                          disabled={isSendingAllCalendarInvites}
+                        >
+                          {isSendingAllCalendarInvites ? "Sending all..." : "Send all actions to calendar"}
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => void sendPlanEmailAndAllCalendarInvites()}
+                          disabled={isSendingCombinedDelivery}
+                        >
+                          {isSendingCombinedDelivery
+                            ? "Sending all (email + calendar)..."
+                            : "Email plan + send all invites"}
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
 
-        <section
-          id="summary"
-          className={`screen ${activeScreen === "summary" ? "is-active" : ""}`}
-          aria-labelledby="summary-title"
-        >
-          <div className="screen-header">
-            <p className="eyebrow">Wrap-up</p>
-            <h1 id="summary-title">Session summary and action plan.</h1>
-          </div>
-          <div className="panel grid-two" data-reveal>
-            <div className="summary-card">
-              <h2>Summary</h2>
-              <ul>
-                {summaryBullets.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-              <h2>Insights</h2>
-              <ul>
-                {summaryInsights.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
-            <div className="summary-card">
-              <h2>Action plan</h2>
-              {summaryActions.map((action) => {
-                const confidence = action.confidence
-                  ? action.confidence[0].toUpperCase() + action.confidence.slice(1)
-                  : "Medium";
-                return (
-                  <div className="action" key={action.title}>
-                    <div>
-                      <strong>{action.title}</strong>
-                      {action.when ? <p>When: {action.when}</p> : null}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Reminder Center</CardTitle>
+                  <CardDescription>In-app reminders with optional browser pop-up alerts.</CardDescription>
+                </CardHeader>
+                <CardContent className="form-grid">
+                  <div className="inline-actions">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void requestBrowserNotificationPermission()}
+                      disabled={notificationPermission === "granted" || notificationPermission === "unsupported"}
+                    >
+                      {notificationPermission === "granted"
+                        ? "Browser notifications enabled"
+                        : notificationPermission === "unsupported"
+                        ? "Browser notifications unsupported"
+                        : "Enable browser notifications"}
+                    </Button>
+                  </div>
+
+                  {reminderItemsSorted.length === 0 ? (
+                    <p className="info">No reminders yet. Sending calendar invites will add reminders here.</p>
+                  ) : (
+                    <div className="action-hub-list">
+                      {reminderItemsSorted.map((reminder) => {
+                        const dueAt = new Date(reminder.dueAt);
+                        const isOverdue = !reminder.completedAt && dueAt.getTime() <= Date.now();
+                        return (
+                          <div key={reminder.id} className="action-hub-item">
+                            <div>
+                              <p className="action-hub-text">{reminder.action}</p>
+                              <p className="info">
+                                Due: {Number.isNaN(dueAt.getTime()) ? reminder.dueAt : dueAt.toLocaleString()}
+                              </p>
+                              <p className="info">Recipient: {reminder.toEmail}</p>
+                              {reminder.completedAt ? (
+                                <p className="status">Completed</p>
+                              ) : isOverdue ? (
+                                <p className="error">Due now</p>
+                              ) : null}
+                            </div>
+                            <div className="action-hub-menu">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => markReminderComplete(reminder.id)}
+                                disabled={Boolean(reminder.completedAt)}
+                              >
+                                {reminder.completedAt ? "Completed" : "Mark done"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => removeReminder(reminder.id)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    <span className="pill">Confidence: {confidence}</span>
-                  </div>
-                );
-              })}
-              <div className="manager-share">
-                <p>Share action plan with your manager?</p>
-                <div className="button-row">
-                  <button className="ghost" type="button">
-                    No
-                  </button>
-                  <button className="primary" type="button">
-                    Yes, send
-                  </button>
-                </div>
-              </div>
-              <div className="manager-share">
-                <p>Save this session to your history?</p>
-                <div className="button-row">
-                  <button
-                    className="ghost"
-                    type="button"
-                    onClick={handleSaveSession}
-                    disabled={isSavingSession}
-                  >
-                    {isSavingSession ? "Saving..." : "Save session"}
-                  </button>
-                </div>
-              </div>
+                  )}
+                </CardContent>
+              </Card>
             </div>
-          </div>
-        </section>
-
-        <section
-          id="history"
-          className={`screen ${activeScreen === "history" ? "is-active" : ""}`}
-          aria-labelledby="history-title"
-        >
-          <div className="screen-header">
-            <p className="eyebrow">History</p>
-            <h1 id="history-title">Past sessions and actions.</h1>
-          </div>
-          <div className="panel" data-reveal>
-            {historyStatus ? <p className="status">{historyStatus}</p> : null}
-            {historyError ? <p className="error">{historyError}</p> : null}
-            {sessions.map((session) => (
-              <div className="history-item" key={session.id}>
-                <div>
-                  <h3>{session.title}</h3>
-                  <p>Saved: {formatSessionDate(session.createdAt)}</p>
-                </div>
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => {
-                    setSelectedSession(session);
-                    setActiveScreen("summary");
-                  }}
-                >
-                  View summary
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
+          </section>
+        ) : null}
       </main>
     </div>
   );

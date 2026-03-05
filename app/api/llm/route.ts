@@ -8,11 +8,11 @@ type LlmRequest = {
 };
 
 export async function POST(request: Request) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
 
   if (!apiKey) {
-    return NextResponse.json({ error: "Missing OPENROUTER_API_KEY." }, { status: 500 });
+    return NextResponse.json({ error: "Missing OPENAI_API_KEY." }, { status: 500 });
   }
 
   let payload: LlmRequest;
@@ -49,26 +49,15 @@ export async function POST(request: Request) {
   ].join("\n");
 
   const nowState = payload.nowState ? JSON.stringify(payload.nowState) : "{}";
-  const userContent = `Context: ${payload.context ?? "general"}\nStyle: ${
-    payload.style ?? "balanced"
-  }\nNowState: ${nowState}\nUser: ${payload.prompt ?? ""}`;
+  const userContent = `Context: ${payload.context ?? "general"}\nStyle: ${payload.style ?? "balanced"
+    }\nNowState: ${nowState}\nUser: ${payload.prompt ?? ""}`;
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json"
-  };
-
-  if (process.env.OPENROUTER_SITE_URL) {
-    headers["HTTP-Referer"] = process.env.OPENROUTER_SITE_URL;
-  }
-
-  if (process.env.OPENROUTER_APP_NAME) {
-    headers["X-Title"] = process.env.OPENROUTER_APP_NAME;
-  }
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({
       model,
       messages: [
@@ -83,7 +72,7 @@ export async function POST(request: Request) {
   if (!response.ok) {
     const errorText = await response.text();
     return NextResponse.json(
-      { error: "OpenRouter request failed.", details: errorText },
+      { error: "OpenAI request failed.", details: errorText },
       { status: 502 }
     );
   }
