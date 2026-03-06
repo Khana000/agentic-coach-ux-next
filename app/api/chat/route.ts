@@ -20,7 +20,7 @@ const PLAN_FEASIBILITY_QUESTION = "Does this action plan work for you?";
 const END_SESSION_QUESTION = "Would you like to end the coaching session now?";
 const END_SESSION_CLOSING_TEXT =
   "Hopefully you found this of use, look forward to our next session, thanks";
-const END_SESSION_TOOL_CALL_PATTERN = /\bcalling\s*tool:\s*end_session\b/i;
+const END_SESSION_TOOL_CALL_PATTERN = /\bcalling\s*tool\s*:?\s*end_session\b/i;
 
 type AssistantToolCall = {
   name: string;
@@ -33,6 +33,65 @@ const normalizeToolCallName = (name: string) =>
     .trim()
     .toLowerCase()
     .replace(/[:\s-]+/g, "_");
+
+const TOOL_CALL_START_PATTERN = /\(\s*calling tool\b/i;
+const TOOL_CALL_NAME_PATTERN = /\(\s*calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
+
+const findToolCallBlockEnd = (text: string, startIndex: number) => {
+  let depth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if ((inSingleQuote || inDoubleQuote) && character === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (!inDoubleQuote && character === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+
+    if (!inSingleQuote && character === "\"") {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+
+    if (inSingleQuote || inDoubleQuote) {
+      continue;
+    }
+
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+};
+
+const stripToolCallArtifacts = (text: string) =>
+  text
+    .replace(/\(\s*calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
+    .replace(/^\s*calling tool\b.*$/gim, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
 const tryParseToolPayload = (rawPayload: string): unknown => {
   const trimmed = rawPayload.trim();
@@ -71,28 +130,52 @@ const tryParseToolPayload = (rawPayload: string): unknown => {
 
 const extractAssistantToolCalls = (rawText: string) => {
   const toolCalls: AssistantToolCall[] = [];
-  const pattern = /\(\s*calling tool:\s*([a-zA-Z0-9_:-]+)([\s\S]*?)\)/gi;
+  let cleanedText = "";
+  let cursor = 0;
 
-  const displayText = rawText
-    .replace(pattern, (fullMatch, nameCapture, restCapture) => {
-      const name = normalizeToolCallName(String(nameCapture ?? ""));
-      if (!name) {
-        return "";
+  while (cursor < rawText.length) {
+    const relativeStart = rawText.slice(cursor).search(TOOL_CALL_START_PATTERN);
+    if (relativeStart < 0) {
+      cleanedText += rawText.slice(cursor);
+      break;
+    }
+
+    const startIndex = cursor + relativeStart;
+    cleanedText += rawText.slice(cursor, startIndex);
+
+    let endIndex = findToolCallBlockEnd(rawText, startIndex);
+    if (endIndex < 0) {
+      const paragraphBreak = rawText.indexOf("\n\n", startIndex);
+      endIndex = paragraphBreak >= 0 ? paragraphBreak - 1 : rawText.length - 1;
+    }
+
+    const block = rawText.slice(startIndex, endIndex + 1);
+    const nameMatch = block.match(TOOL_CALL_NAME_PATTERN);
+    const name = normalizeToolCallName(String(nameMatch?.[1] ?? ""));
+
+    if (name) {
+      const payloadLabelMatch = block.match(/\bwith payload\s*:?\s*/i);
+      let payloadRaw = "";
+
+      if (payloadLabelMatch && payloadLabelMatch.index !== undefined) {
+        const payloadStart = payloadLabelMatch.index + payloadLabelMatch[0].length;
+        payloadRaw = block
+          .slice(payloadStart)
+          .replace(/\)\s*$/, "")
+          .trim();
       }
-
-      const rest = String(restCapture ?? "");
-      const payloadMatch = rest.match(/with payload:\s*([\s\S]*)$/i);
-      const payloadRaw = payloadMatch?.[1]?.trim() ?? "";
 
       toolCalls.push({
         name,
         payload: payloadRaw ? tryParseToolPayload(payloadRaw) : undefined,
-        raw: fullMatch.trim()
+        raw: block.trim()
       });
-      return "";
-    })
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    }
+
+    cursor = endIndex + 1;
+  }
+
+  const displayText = stripToolCallArtifacts(cleanedText);
 
   return { displayText, toolCalls };
 };
@@ -1110,6 +1193,7 @@ export async function POST(request: Request) {
       ? "ManagerSupportMode is requested. Include concise manager-support guidance relevant to the coachee's current challenge (what support to ask for, and how to ask)."
       : "Manager can be mentioned only when clearly relevant as one optional support lever; do not force manager involvement and do not shift the discussion away from coachee-owned actions.",
     "Always respond in clean Markdown only (no JSON, no code fences unless asked).",
+    "Never expose internal tool-invocation text to the coachee (for example: 'Calling tool ... with payload ...').",
     planRequested
       ? "PlanMode is requested. Provide a concise structured micro-plan now."
       : "PlanMode is not requested. Do not generate a full action plan or development plan.",
