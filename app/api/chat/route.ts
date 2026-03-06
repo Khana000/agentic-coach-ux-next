@@ -17,6 +17,8 @@ const PLAN_OPT_IN_QUESTION = "Would you like me to create a coaching plan for yo
 const MANAGER_MEETING_QUESTION =
   "Would you like to set up a meeting with your manager to align on what support they can provide?";
 const PLAN_FEASIBILITY_QUESTION = "Does this action plan work for you?";
+const PLAN_STRUCTURED_OUTPUT_PATTERN =
+  /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const END_SESSION_QUESTION = "Would you like to end the coaching session now?";
 const END_SESSION_CLOSING_TEXT =
   "Hopefully you found this of use, look forward to our next session, thanks";
@@ -1026,7 +1028,17 @@ export async function POST(request: Request) {
     (message) =>
       message.role === "assistant" && message.content.toLowerCase().includes(PLAN_FEASIBILITY_QUESTION.toLowerCase())
   );
-  const hasUserAcceptedPlan = hasAskedPlanOptIn && isAffirmative(latestUserMessage) && !isNegative(latestUserMessage);
+  const hasGeneratedPlanAlready = allMessages.some(
+    (message) =>
+      message.role === "assistant" &&
+      (PLAN_STRUCTURED_OUTPUT_PATTERN.test(message.content) ||
+        message.content.toLowerCase().includes(PLAN_FEASIBILITY_QUESTION.toLowerCase()))
+  );
+  const hasUserAcceptedPlan =
+    !hasGeneratedPlanAlready &&
+    hasAskedPlanOptIn &&
+    isAffirmative(latestUserMessage) &&
+    !isNegative(latestUserMessage);
   const hasUserApprovedPlanFeasibility =
     hasAskedPlanFeasibilityPrompt &&
     isAffirmative(latestUserMessage) &&

@@ -332,6 +332,31 @@ const extractActionItemsFromText = (text: string) => {
   return result;
 };
 
+const normalizeActionItems = (items: string[]) => {
+  const result: string[] = [];
+
+  for (const item of items) {
+    const trimmed = item.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const lowered = trimmed.toLowerCase();
+    if (result.some((existing) => existing.toLowerCase() === lowered)) {
+      continue;
+    }
+
+    result.push(trimmed);
+  }
+
+  return result;
+};
+
+const buildActionPlanSignature = (items: string[]) =>
+  normalizeActionItems(items)
+    .map((item) => item.toLowerCase())
+    .join("||");
+
 const getTrialResetRequested = () => {
   if (typeof window === "undefined") {
     return false;
@@ -385,6 +410,7 @@ export default function HomePage() {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [executionToolsEnabled, setExecutionToolsEnabled] = useState(false);
+  const [actionHubItems, setActionHubItems] = useState<string[]>([]);
   const [deliveryEmail, setDeliveryEmail] = useState("");
   const [deliveryName, setDeliveryName] = useState("");
   const [calendarAction, setCalendarAction] = useState("");
@@ -416,14 +442,35 @@ export default function HomePage() {
   const lastAssistantMessage =
     [...chatMessages].reverse().find((message) => message.role === "assistant")?.content ?? "";
 
-  const extractedActionItems = useMemo(
-    () => extractActionItemsFromText(lastAssistantMessage),
-    [lastAssistantMessage]
-  );
   const reminderItemsSorted = useMemo(
     () => [...reminders].sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
     [reminders]
   );
+
+  const clearPendingActionPlan = () => {
+    pendingPlanSignatureRef.current = "";
+    pendingPlanItemsRef.current = [];
+    pendingPlanAssistantIndexRef.current = -1;
+  };
+
+  const finalizeActionPlan = (rawItems: string[], signatureHint?: string) => {
+    const normalized = normalizeActionItems(rawItems);
+    if (normalized.length === 0) {
+      return false;
+    }
+
+    const signature = signatureHint?.trim() || buildActionPlanSignature(normalized);
+    if (!signature) {
+      return false;
+    }
+
+    appliedPlanSignatureRef.current = signature;
+    clearPendingActionPlan();
+    setExecutionToolsEnabled(true);
+    setActionHubItems(normalized);
+    setStatusMessage("Action plan finalised and moved to Action Hub.");
+    return true;
+  };
 
   const appendLiveMessage = (role: ChatRole, rawContent: string) => {
     const content = rawContent.trim();
@@ -683,14 +730,12 @@ export default function HomePage() {
       return;
     }
 
-    if (!PLAN_OUTPUT_PATTERN.test(lastMessage.content) || extractedActionItems.length === 0) {
+    const planItemsFromMessage = extractActionItemsFromText(lastMessage.content);
+    if (!PLAN_OUTPUT_PATTERN.test(lastMessage.content) || planItemsFromMessage.length === 0) {
       return;
     }
 
-    const signature = extractedActionItems
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean)
-      .join("||");
+    const signature = buildActionPlanSignature(planItemsFromMessage);
 
     if (!signature) {
       return;
@@ -701,13 +746,13 @@ export default function HomePage() {
     }
 
     pendingPlanSignatureRef.current = signature;
-    pendingPlanItemsRef.current = extractedActionItems;
+    pendingPlanItemsRef.current = planItemsFromMessage;
     pendingPlanAssistantIndexRef.current = chatMessages.length - 1;
     setExecutionToolsEnabled(true);
     setStatusMessage(
       "Action plan created. If the coachee agrees, I will keep it in Action Hub."
     );
-  }, [chatMessages, extractedActionItems]);
+  }, [chatMessages]);
 
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
@@ -732,31 +777,27 @@ export default function HomePage() {
       return;
     }
 
-    appliedPlanSignatureRef.current = pendingPlanSignatureRef.current;
-    pendingPlanSignatureRef.current = "";
-    pendingPlanItemsRef.current = [];
-    pendingPlanAssistantIndexRef.current = -1;
-    setStatusMessage("Action plan agreed.");
+    finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
   }, [chatMessages]);
 
   useEffect(() => {
-    if (extractedActionItems.length === 0) {
+    if (actionHubItems.length === 0) {
       setCalendarAction("");
       setActionDueDates({});
       return;
     }
 
     setCalendarAction((current) =>
-      current && extractedActionItems.includes(current) ? current : extractedActionItems[0]
+      current && actionHubItems.includes(current) ? current : actionHubItems[0]
     );
     setActionDueDates((previous) => {
       const next: Record<string, string> = {};
-      extractedActionItems.forEach((item) => {
+      actionHubItems.forEach((item) => {
         next[item] = previous[item] ?? "";
       });
       return next;
     });
-  }, [extractedActionItems]);
+  }, [actionHubItems]);
 
   const getStoredTrialStatus = (betaUsername?: string | null) => {
     if (typeof window === "undefined") {
@@ -995,9 +1036,11 @@ export default function HomePage() {
     setChatMessages([{ role: "assistant", content: INITIAL_COACH_MESSAGE }]);
     setChatInput("");
     setExecutionToolsEnabled(false);
-    pendingPlanSignatureRef.current = "";
-    pendingPlanItemsRef.current = [];
-    pendingPlanAssistantIndexRef.current = -1;
+    setActionHubItems([]);
+    setCalendarAction("");
+    setActionDueDates({});
+    appliedPlanSignatureRef.current = "";
+    clearPendingActionPlan();
     setStatusMessage("Coaching session started.");
     setErrorMessage("");
     return true;
@@ -1222,7 +1265,7 @@ export default function HomePage() {
       return;
     }
 
-    if (extractedActionItems.length === 0) {
+    if (actionHubItems.length === 0) {
       setErrorMessage("No action items found to email.");
       return;
     }
@@ -1240,7 +1283,7 @@ export default function HomePage() {
           toEmail,
           coacheeName: getResolvedRecipientName(),
           summary: lastAssistantMessage,
-          actions: extractedActionItems
+          actions: actionHubItems
         })
       });
 
@@ -1259,7 +1302,7 @@ export default function HomePage() {
   };
 
   const sendCalendarInvite = async (actionOverride?: string, fallbackIndex = 0) => {
-    const actionText = actionOverride?.trim() || calendarAction.trim() || extractedActionItems[0] || "";
+    const actionText = actionOverride?.trim() || calendarAction.trim() || actionHubItems[0] || "";
     if (!actionText) {
       setErrorMessage("No action selected for calendar invite.");
       return;
@@ -1295,7 +1338,7 @@ export default function HomePage() {
   };
 
   const sendAllCalendarInvites = async () => {
-    if (extractedActionItems.length === 0) {
+    if (actionHubItems.length === 0) {
       setErrorMessage("No action items found for calendar invites.");
       return;
     }
@@ -1311,8 +1354,8 @@ export default function HomePage() {
     let sent = 0;
     const failedActions: string[] = [];
 
-    for (let index = 0; index < extractedActionItems.length; index += 1) {
-      const actionText = extractedActionItems[index];
+    for (let index = 0; index < actionHubItems.length; index += 1) {
+      const actionText = actionHubItems[index];
       const start = resolveActionStartDate(actionText, index);
       if (!start) {
         failedActions.push(`${actionText} (invalid date)`);
@@ -1355,7 +1398,7 @@ export default function HomePage() {
       return;
     }
 
-    if (extractedActionItems.length === 0) {
+    if (actionHubItems.length === 0) {
       setErrorMessage("No action items found to send.");
       return;
     }
@@ -1377,7 +1420,7 @@ export default function HomePage() {
           toEmail,
           coacheeName: getResolvedRecipientName(),
           summary: lastAssistantMessage,
-          actions: extractedActionItems
+          actions: actionHubItems
         })
       });
 
@@ -1394,8 +1437,8 @@ export default function HomePage() {
         );
       }
 
-      for (let index = 0; index < extractedActionItems.length; index += 1) {
-        const actionText = extractedActionItems[index];
+      for (let index = 0; index < actionHubItems.length; index += 1) {
+        const actionText = actionHubItems[index];
         const start = resolveActionStartDate(actionText, index);
         if (!start) {
           failedActions.push(`${actionText} (invalid date)`);
@@ -1419,7 +1462,7 @@ export default function HomePage() {
       const statusParts: string[] = [];
       statusParts.push(emailSent ? "Action plan email sent." : "Action plan email failed.");
       statusParts.push(
-        `Calendar invites sent: ${sentInvites}/${extractedActionItems.length}.`
+        `Calendar invites sent: ${sentInvites}/${actionHubItems.length}.`
       );
       setStatusMessage(statusParts.join(" "));
 
@@ -1456,7 +1499,11 @@ export default function HomePage() {
 
         if (planItems.length > 0) {
           const actionOnlyItems = planItems.map((item) => item.action.trim()).filter(Boolean);
-          const signature = actionOnlyItems.map((item) => item.toLowerCase()).join("||");
+          const signature = buildActionPlanSignature(actionOnlyItems);
+          if (!signature || signature === appliedPlanSignatureRef.current) {
+            continue;
+          }
+
           pendingPlanSignatureRef.current = signature;
           pendingPlanItemsRef.current = actionOnlyItems;
           pendingPlanAssistantIndexRef.current = Math.max(0, chatMessagesRef.current.length - 1);
@@ -1471,11 +1518,9 @@ export default function HomePage() {
             !PLAN_REJECTION_PATTERN.test(latestUserMessage);
 
           if (alreadyAgreed) {
-            savedPlanActions += planItems.length;
-            appliedPlanSignatureRef.current = signature;
-            pendingPlanSignatureRef.current = "";
-            pendingPlanItemsRef.current = [];
-            pendingPlanAssistantIndexRef.current = -1;
+            if (finalizeActionPlan(actionOnlyItems, signature)) {
+              savedPlanActions += planItems.length;
+            }
           }
         }
       } else if (name === "end_session") {
@@ -1485,7 +1530,7 @@ export default function HomePage() {
 
     if (savedPlanActions > 0) {
       setStatusMessage(
-        `Tool call handled: save_action_plan (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
+        `Action plan finalised and moved to Action Hub (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
       );
     } else if (dedupedCalls.some((toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan")) {
       setStatusMessage("Tool call handled: save_action_plan (pending coachee agreement).");
@@ -1913,8 +1958,8 @@ export default function HomePage() {
                     <p className="info">
                       Action Hub is clear until an action plan is requested via `Create action plan`.
                     </p>
-                  ) : extractedActionItems.length === 0 ? (
-                    <p className="info">Action plan requested. Waiting for plan items from the coach response.</p>
+                  ) : actionHubItems.length === 0 ? (
+                    <p className="info">No finalised actions yet. Confirm the proposed action plan to move it here.</p>
                   ) : (
                     <>
                       <div className="field">
@@ -1928,7 +1973,7 @@ export default function HomePage() {
                         />
                       </div>
                       <div className="action-hub-list">
-                        {extractedActionItems.map((item, index) => (
+                        {actionHubItems.map((item, index) => (
                           <div key={item} className="action-hub-item">
                             <div>
                               <p className="action-hub-text">{item}</p>
@@ -1980,7 +2025,7 @@ export default function HomePage() {
                           value={calendarAction}
                           onChange={(event) => setCalendarAction(event.target.value)}
                         >
-                          {extractedActionItems.map((action) => (
+                          {actionHubItems.map((action) => (
                             <option key={action} value={action}>
                               {action}
                             </option>
