@@ -449,6 +449,28 @@ export default function HomePage() {
     () => [...reminders].sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
     [reminders]
   );
+  const transcriptActionItems = useMemo(() => {
+    const collected: string[] = [];
+
+    chatMessages.forEach((message) => {
+      if (message.role !== "assistant") {
+        return;
+      }
+
+      extractActionItemsFromText(message.content).forEach((item) => {
+        collected.push(item);
+      });
+    });
+
+    return normalizeActionItems(collected);
+  }, [chatMessages]);
+  const hasTranscriptItemsNotInHub = useMemo(
+    () =>
+      transcriptActionItems.some(
+        (item) => !actionHubItems.some((existing) => existing.toLowerCase() === item.toLowerCase())
+      ),
+    [transcriptActionItems, actionHubItems]
+  );
 
   const clearPendingActionPlan = () => {
     pendingPlanSignatureRef.current = "";
@@ -473,6 +495,27 @@ export default function HomePage() {
     setActionHubItems(normalized);
     setStatusMessage("Action plan finalised and moved to Action Hub.");
     return true;
+  };
+
+  const importTranscriptActionsToHub = () => {
+    if (transcriptActionItems.length === 0) {
+      setErrorMessage("No action bullets found in transcript yet.");
+      return;
+    }
+
+    const currentItems = actionHubItems;
+    const mergedItems = normalizeActionItems([...currentItems, ...transcriptActionItems]);
+    const addedCount = mergedItems.length - currentItems.length;
+    if (addedCount <= 0) {
+      setStatusMessage("Action Hub is already synced with transcript actions.");
+      setErrorMessage("");
+      return;
+    }
+
+    setExecutionToolsEnabled(true);
+    setActionHubItems(mergedItems);
+    setStatusMessage(`Imported ${addedCount} transcript action${addedCount === 1 ? "" : "s"} into Action Hub.`);
+    setErrorMessage("");
   };
 
   const appendLiveMessage = (role: ChatRole, rawContent: string) => {
@@ -1987,13 +2030,32 @@ export default function HomePage() {
                 </CardHeader>
                 <CardContent className="form-grid">
                   {!executionToolsEnabled ? (
-                    <p className="info">
-                      Action Hub is clear until an action plan is requested via `Create action plan`.
-                    </p>
+                    <>
+                      <p className="info">
+                        Action Hub is clear until an action plan is requested via `Create action plan`.
+                      </p>
+                      {transcriptActionItems.length > 0 ? (
+                        <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
+                          Import {transcriptActionItems.length} action{transcriptActionItems.length === 1 ? "" : "s"} from transcript
+                        </Button>
+                      ) : null}
+                    </>
                   ) : actionHubItems.length === 0 ? (
-                    <p className="info">No finalised actions yet. Confirm the proposed action plan to move it here.</p>
+                    <>
+                      <p className="info">No finalised actions yet. Confirm the proposed action plan to move it here.</p>
+                      {transcriptActionItems.length > 0 ? (
+                        <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
+                          Import {transcriptActionItems.length} action{transcriptActionItems.length === 1 ? "" : "s"} from transcript
+                        </Button>
+                      ) : null}
+                    </>
                   ) : (
                     <>
+                      {hasTranscriptItemsNotInHub ? (
+                        <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
+                          Sync additional actions from transcript
+                        </Button>
+                      ) : null}
                       <div className="field">
                         <Label htmlFor="delivery-email">Recipient email</Label>
                         <Input
