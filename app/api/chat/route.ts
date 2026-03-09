@@ -19,6 +19,8 @@ const MANAGER_MEETING_QUESTION =
 const PLAN_FEASIBILITY_QUESTION = "Does this action plan work for you?";
 const PLAN_STRUCTURED_OUTPUT_PATTERN =
   /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
+const CLARIFICATION_PROMPT_PATTERN =
+  /\bwhat specific situation are you referring to\?\s*what (was|words were) said,\s*by whom,\s*and what impact did (it|that) have on you\?/i;
 const END_SESSION_QUESTION = "Would you like to end the coaching session now?";
 const END_SESSION_CLOSING_TEXT =
   "Hopefully you found this of use, look forward to our next session, thanks";
@@ -197,6 +199,8 @@ const getFocusPhrase = (text: string) =>
     .trim()
     .slice(0, 80);
 
+const isClarificationPrompt = (text: string) => CLARIFICATION_PROMPT_PATTERN.test(text.trim());
+
 const isLowSignalReply = (text: string) => {
   const normalized = text.trim();
   if (!normalized) {
@@ -204,6 +208,12 @@ const isLowSignalReply = (text: string) => {
   }
 
   if (isAffirmative(normalized) || isNegative(normalized)) {
+    return false;
+  }
+
+  const contextualSignalPattern =
+    /\b(team|manage|manager|lead|leadership|report|stakeholder|meeting|deadline|project|presentation|communication|conflict|feedback|performance|workload|delegat|priorit|anxiety|confidence)\b/i;
+  if (contextualSignalPattern.test(normalized)) {
     return false;
   }
 
@@ -279,7 +289,7 @@ const HOW_TO_FOLLOWUP_PATTERN = /^\s*how do (i|you|we)\b/i;
 const EXPLANATION_FOLLOWUP_PATTERN =
   /^\s*(please\s*)?((can|could)\s+you\s*)?(explain|elaborate|expand|clarify|break (this|that|it) down|tell me more)(\s+(more|further))?\b/i;
 const COACHING_TOPIC_HINT_PATTERN =
-  /\b(present|presentation|presenting|audience|public speaking|ted talks?|communication|influence|confidence)\b/i;
+  /\b(present|presentation|presenting|audience|public speaking|ted talks?|communication|influence|confidence|team|manager|leadership|delegat|priorit|performance|conflict)\b/i;
 
 const shouldBypassClarificationPrompt = (latestUserMessage: string, messages: ChatMessage[]) => {
   const normalized = latestUserMessage.trim();
@@ -1008,7 +1018,9 @@ export async function POST(request: Request) {
   const definitionRequested = isDefinitionIntent(latestUserMessage, allMessages);
   const explanationRequested = definitionRequested || explanationFollowupRequested;
   const definitionTopicHint = inferDefinitionTopicHint(latestUserMessage, allMessages);
-  const assistantTopicHint = getPreviousAssistantMessage(allMessages).slice(0, 180);
+  const previousAssistantMessage = getPreviousAssistantMessage(allMessages);
+  const previousAssistantWasClarification = isClarificationPrompt(previousAssistantMessage);
+  const assistantTopicHint = previousAssistantMessage.slice(0, 180);
   const bypassClarificationPrompt = shouldBypassClarificationPrompt(latestUserMessage, allMessages);
   const nonLeadershipQuestionRequested = false;
   const discussionMarkedComplete = discussionCompletePattern.test(latestUserMessage);
@@ -1106,6 +1118,7 @@ export async function POST(request: Request) {
     !hasManagerRoutingInstruction &&
     !explanationRequested &&
     !bypassClarificationPrompt &&
+    !previousAssistantWasClarification &&
     !nonLeadershipQuestionRequested &&
     isLowSignalReply(latestUserMessage)
   ) {
@@ -1397,13 +1410,19 @@ export async function POST(request: Request) {
   const latestUserWordCount = latestUserMessage
     .split(/\s+/)
     .filter(Boolean).length;
+  const hasContextualSignal =
+    /\b(team|manage|manager|lead|leadership|report|stakeholder|meeting|deadline|project|presentation|communication|conflict|feedback|performance|workload|delegat|priorit|anxiety|confidence)\b/i.test(
+      latestUserMessage
+    );
   if (
     !planRequested &&
     !managerSupportRequested &&
     !hasManagerRoutingInstruction &&
     !explanationRequested &&
     !bypassClarificationPrompt &&
+    !previousAssistantWasClarification &&
     !nonLeadershipQuestionRequested &&
+    !hasContextualSignal &&
     latestUserWordCount <= 12 &&
     !hasKeywordOverlap(latestUserMessage, text)
   ) {
