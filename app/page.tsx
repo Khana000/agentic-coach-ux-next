@@ -61,6 +61,9 @@ const REMINDER_POLL_MS = 30_000;
 const DEFAULT_ELEVENLABS_AGENT_ID = "agent_2301kj5gk2bkezts94y36e0tzxza";
 const DEFAULT_ELEVENLABS_VOICE_ID_MALE = "QF9HJC7XWnue5c9W3LkY";
 const DEFAULT_ELEVENLABS_VOICE_ID_FEMALE = "gJx1vCzNCD1EQHT212Ls";
+const VOICE_CONNECT_TIMEOUT_MS = 5_000;
+const VOICE_TOKEN_TIMEOUT_MS = 2_500;
+const VOICE_LAST_ATTEMPT_STORAGE_KEY = "agenticCoach.voice.lastAttempt.v1";
 
 const INITIAL_COACH_MESSAGE =
   "Welcome. What outcome would make this coaching session most valuable for you today?";
@@ -907,10 +910,19 @@ export default function HomePage() {
       let conversationToken = "";
       let tokenError = "";
       try {
-        const tokenResponse = await fetch(`/api/elevenlabs/token?agentId=${encodeURIComponent(agentId)}`, {
-          method: "GET",
-          cache: "no-store"
-        });
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), VOICE_TOKEN_TIMEOUT_MS);
+        let tokenResponse: Response;
+        try {
+          tokenResponse = await fetch(`/api/elevenlabs/token?agentId=${encodeURIComponent(agentId)}`, {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal
+          });
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+
         const tokenRaw = await tokenResponse.text();
         const tokenPayload = (tokenRaw ? JSON.parse(tokenRaw) : {}) as {
           token?: string;
@@ -930,10 +942,16 @@ export default function HomePage() {
           tokenError = await readApiError(tokenResponse, "Unable to create voice token.");
         }
       } catch (tokenFetchError) {
+        const tokenErrorMessage =
+          tokenFetchError instanceof Error &&
+          (tokenFetchError.name === "AbortError" || /aborted|timeout/i.test(tokenFetchError.message))
+            ? "Voice token request timed out."
+            : "";
         tokenError =
-          tokenFetchError instanceof Error
+          tokenErrorMessage ||
+          (tokenFetchError instanceof Error
             ? tokenFetchError.message
-            : "Unable to read voice token response.";
+            : "Unable to read voice token response.");
       }
 
       const attempts: Array<{ label: string; options: Record<string, unknown> }> = [];
@@ -954,19 +972,30 @@ export default function HomePage() {
         });
       }
       attempts.push({
-        label: "agent + websocket",
-        options: {
-          agentId,
-          connectionType: "websocket"
-        }
-      });
-      attempts.push({
         label: "agent + webrtc",
         options: {
           agentId,
           connectionType: "webrtc"
         }
       });
+      attempts.push({
+        label: "agent + websocket",
+        options: {
+          agentId,
+          connectionType: "websocket"
+        }
+      });
+
+      if (typeof window !== "undefined") {
+        const preferredLabel = window.localStorage.getItem(VOICE_LAST_ATTEMPT_STORAGE_KEY)?.trim();
+        if (preferredLabel) {
+          const preferredAttemptIndex = attempts.findIndex((attempt) => attempt.label === preferredLabel);
+          if (preferredAttemptIndex > 0) {
+            const [preferredAttempt] = attempts.splice(preferredAttemptIndex, 1);
+            attempts.unshift(preferredAttempt);
+          }
+        }
+      }
 
       const attemptErrors: string[] = [];
       for (const attempt of attempts) {
@@ -974,7 +1003,10 @@ export default function HomePage() {
           setStatusMessage(`Connecting voice (${attempt.label})...`);
           await stopVoiceSession({ preserveBooting: true });
           await elevenConversation.startSession(attempt.options as any);
-          await waitForVoiceConnected(9000);
+          await waitForVoiceConnected(VOICE_CONNECT_TIMEOUT_MS);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(VOICE_LAST_ATTEMPT_STORAGE_KEY, attempt.label);
+          }
           setErrorMessage("");
           setStatusMessage("Voice channel connected. Two-way conversation is live.");
           return true;
