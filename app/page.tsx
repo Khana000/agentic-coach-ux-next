@@ -52,6 +52,7 @@ type ReminderItem = {
 const BETA_PASSWORD = "12345";
 const MAX_BETA_USERS = 8;
 const MAX_TRIAL_SESSIONS = 1;
+const REQUIRE_BETA_LOGIN = process.env.NEXT_PUBLIC_REQUIRE_BETA_LOGIN === "true";
 const TRIAL_STATE_STORAGE_KEY_PREFIX = "agenticCoach.trialState.v7";
 const TRIAL_STATE_STORAGE_KEY_ROOT = "agenticCoach.trialState.";
 const TRIAL_RESET_QUERY_KEYS = ["trialReset", "resetTrial", "reset_trial", "renewTrial"] as const;
@@ -64,6 +65,12 @@ const DEFAULT_ELEVENLABS_VOICE_ID_FEMALE = "gJx1vCzNCD1EQHT212Ls";
 const VOICE_CONNECT_TIMEOUT_MS = 5_000;
 const VOICE_TOKEN_TIMEOUT_MS = 2_500;
 const VOICE_LAST_ATTEMPT_STORAGE_KEY = "agenticCoach.voice.lastAttempt.v1";
+const TEST_TRIAL_STATUS: TrialStatus = {
+  sessionsLimit: 999,
+  sessionsUsed: 0,
+  sessionsRemaining: 999,
+  activeSessionId: null
+};
 
 const INITIAL_COACH_MESSAGE =
   "Welcome. What outcome would make this coaching session most valuable for you today?";
@@ -1080,6 +1087,30 @@ export default function HomePage() {
   };
 
   const startTextSession = () => {
+    if (!REQUIRE_BETA_LOGIN) {
+      if (sessionActiveRef.current) {
+        setSessionActive(true);
+        setStatusMessage("Coaching session active.");
+        setErrorMessage("");
+        return true;
+      }
+
+      sessionActiveRef.current = true;
+      setSessionActive(true);
+      setChatMessages([{ role: "assistant", content: INITIAL_COACH_MESSAGE }]);
+      setChatInput("");
+      setExecutionToolsEnabled(false);
+      setActionHubItems([]);
+      setCalendarAction("");
+      setActionDueDates({});
+      appliedPlanSignatureRef.current = "";
+      clearPendingActionPlan();
+      setTrialStatus(TEST_TRIAL_STATUS);
+      setStatusMessage("Coaching session started.");
+      setErrorMessage("");
+      return true;
+    }
+
     const trialUser = authenticatedBetaUsername ?? resolveAllowedBetaUsername(username);
     const current = trialStatus ?? getStoredTrialStatus(trialUser);
 
@@ -1136,6 +1167,17 @@ export default function HomePage() {
   };
 
   const endTextSession = (reason?: string) => {
+    if (!REQUIRE_BETA_LOGIN) {
+      sessionActiveRef.current = false;
+      setSessionActive(false);
+      if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
+        void stopVoiceSession();
+      }
+      setStatusMessage(reason ?? "Coaching session ended.");
+      setErrorMessage("");
+      return;
+    }
+
     const trialUser = authenticatedBetaUsername ?? resolveAllowedBetaUsername(username);
     const current = trialStatus ?? getStoredTrialStatus(trialUser);
 
@@ -1159,6 +1201,16 @@ export default function HomePage() {
   const startApp = async () => {
     setAuthError("");
     setErrorMessage("");
+
+    if (!REQUIRE_BETA_LOGIN) {
+      setAuthenticatedBetaUsername("TestUser");
+      setTrialStatus(TEST_TRIAL_STATUS);
+      setScreen("session");
+      sessionActiveRef.current = false;
+      setSessionActive(false);
+      setStatusMessage("Test mode active. Login is disabled.");
+      return;
+    }
 
     const normalizedPassword = password.trim();
     const resolvedUsername = resolveAllowedBetaUsername(username);
@@ -1198,6 +1250,19 @@ export default function HomePage() {
     if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
       void stopVoiceSession();
     }
+
+    if (!REQUIRE_BETA_LOGIN) {
+      setAuthenticatedBetaUsername("TestUser");
+      setTrialStatus(TEST_TRIAL_STATUS);
+      setScreen("session");
+      sessionActiveRef.current = false;
+      setSessionActive(false);
+      setStatusMessage("Test mode active. Login is disabled.");
+      setErrorMessage("");
+      setAuthError("");
+      return;
+    }
+
     setScreen("welcome");
     setStatusMessage("");
     setErrorMessage("");
@@ -2007,14 +2072,14 @@ export default function HomePage() {
                     placeholder="Type your coaching response here."
                     rows={4}
                   />
-                  <div className="inline-actions">
-                    <Button type="button" onClick={handleChatSend} disabled={isChatting || !sessionActive}>
-                      {isChatting ? "Sending..." : "Send message"}
-                    </Button>
-                    <Button type="button" variant="outline" onClick={openWelcome}>
-                      Log out
-                    </Button>
-                  </div>
+                <div className="inline-actions">
+                  <Button type="button" onClick={handleChatSend} disabled={isChatting || !sessionActive}>
+                    {isChatting ? "Sending..." : "Send message"}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={REQUIRE_BETA_LOGIN ? openWelcome : openCover}>
+                    {REQUIRE_BETA_LOGIN ? "Log out" : "Back"}
+                  </Button>
+                </div>
                 </div>
 
                 {statusMessage ? <p className="status">{statusMessage}</p> : null}
