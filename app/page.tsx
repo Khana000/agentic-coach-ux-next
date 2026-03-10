@@ -80,8 +80,10 @@ const PLAN_INTENT_PATTERN =
 const PLAN_NEGATIVE_PATTERN = /\b(don't|do not|not now|no plan|without plan)\b/i;
 const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const PLAN_APPROVAL_PATTERN =
-  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan)\b/i;
+  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|sounds fine|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|that works|all good|good plan|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine)\b/i;
 const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
+const ACTION_HUB_CONFIRMATION_MESSAGE =
+  "Great, action plan confirmed. It is now in Action Hub. You can set or adjust deadlines from the calendar dropdown.";
 
 const COACH_ENDING_MESSAGE =
   "Hopefully you found this of use, look forward to our next session, thanks";
@@ -409,6 +411,14 @@ const clearAllTrialStates = () => {
   keysToRemove.forEach((key) => window.localStorage.removeItem(key));
 };
 
+const isPlanApprovalText = (text: string) => {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return PLAN_APPROVAL_PATTERN.test(normalized) && !PLAN_REJECTION_PATTERN.test(normalized);
+};
+
 export default function HomePage() {
   const [screen, setScreen] = useState<AppScreen>("cover");
 
@@ -521,6 +531,18 @@ export default function HomePage() {
     return true;
   };
 
+  const finalizePendingPlanIfApproved = (rawText: string) => {
+    if (!isPlanApprovalText(rawText)) {
+      return false;
+    }
+
+    if (!pendingPlanSignatureRef.current || pendingPlanItemsRef.current.length === 0) {
+      return false;
+    }
+
+    return finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
+  };
+
   const importTranscriptActionsToHub = () => {
     if (transcriptActionItems.length === 0) {
       setErrorMessage("No action bullets found in transcript yet.");
@@ -612,7 +634,18 @@ export default function HomePage() {
       const isAssistant = payload?.role === "agent";
       if (isAssistant) {
         const toolEnvelope = extractAssistantToolCalls(rawMessage);
-        const assistantText = (toolEnvelope.displayText || rawMessage).trim();
+        const hasSaveActionTool = toolEnvelope.toolCalls.some(
+          (toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan"
+        );
+        const latestUserMessage =
+          [...chatMessagesRef.current].reverse().find((message) => message.role === "user")?.content ?? "";
+        const shouldCollapsePlanRecital =
+          hasSaveActionTool &&
+          isPlanApprovalText(latestUserMessage) &&
+          (PLAN_OUTPUT_PATTERN.test(rawMessage) || /owner|timeline|success[_\s-]?signal/i.test(rawMessage));
+        const assistantText = (
+          shouldCollapsePlanRecital ? ACTION_HUB_CONFIRMATION_MESSAGE : toolEnvelope.displayText || rawMessage
+        ).trim();
         if (assistantText) {
           appendLiveMessage("assistant", assistantText);
         }
@@ -623,6 +656,16 @@ export default function HomePage() {
       }
 
       appendLiveMessage("user", rawMessage);
+      const finalized = finalizePendingPlanIfApproved(rawMessage);
+      if (finalized && coachingStartModeRef.current === "voice") {
+        try {
+          elevenConversation.sendContextualUpdate(
+            "Action plan is confirmed and saved to Action Hub. Respond with a brief acknowledgement and do not repeat action owner or deadline fields."
+          );
+        } catch {
+          // no-op
+        }
+      }
     }
   });
 
@@ -1776,6 +1819,17 @@ export default function HomePage() {
     setChatMessages(nextMessages);
     chatMessagesRef.current = nextMessages;
     setChatInput("");
+
+    if (finalizePendingPlanIfApproved(trimmedInput)) {
+      const updatedMessages = [
+        ...nextMessages,
+        { role: "assistant" as const, content: ACTION_HUB_CONFIRMATION_MESSAGE }
+      ];
+      setChatMessages(updatedMessages);
+      chatMessagesRef.current = updatedMessages;
+      setIsChatting(false);
+      return;
+    }
 
     try {
       const isLiveVoiceTurn = coachingStartMode === "voice" && voiceChannelStatus === "connected";
