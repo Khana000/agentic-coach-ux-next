@@ -85,6 +85,8 @@ const PLAN_APPROVAL_PATTERN =
 const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
 const ACTION_HUB_CONFIRMATION_MESSAGE =
   "Great, action plan confirmed. It is now in Action Hub. You can set or adjust deadlines from the calendar dropdown.";
+const TOOL_LEAK_PATTERN = /\b(calling tool|with payload|payload)\b/i;
+const PLAN_DETAIL_RECITAL_PATTERN = /\b(owner|deadline|timeline|success[_\s-]?signal|action_plan)\b/i;
 
 const COACH_ENDING_MESSAGE =
   "Hopefully you found this of use, look forward to our next session, thanks";
@@ -502,6 +504,7 @@ export default function HomePage() {
   const muteNextVoiceReplyRef = useRef(false);
   const voiceReplyMutedRef = useRef(false);
   const voiceReplyUnmuteTimerRef = useRef<number | null>(null);
+  const voiceAgentPartialTextRef = useRef("");
 
   const selectedCoach = coachProfiles[coachGender];
 
@@ -657,12 +660,29 @@ export default function HomePage() {
     }
   };
 
+  const muteCurrentVoiceReplyAudio = () => {
+    clearVoiceMuteTimer();
+    try {
+      elevenConversation.setVolume({ volume: 0 });
+      voiceReplyMutedRef.current = true;
+      muteNextVoiceReplyRef.current = false;
+    } catch {
+      // no-op
+    }
+    if (typeof window !== "undefined") {
+      voiceReplyUnmuteTimerRef.current = window.setTimeout(() => {
+        restoreVoiceReplyVolume();
+      }, VOICE_REPLY_MUTE_MS);
+    }
+  };
+
   const elevenConversation = useConversation({
     onConnect: () => {
       setVoiceChannelStatus("connected");
       setErrorMessage("");
       setStatusMessage("Voice channel connected. Speak naturally.");
       muteNextVoiceReplyRef.current = false;
+      voiceAgentPartialTextRef.current = "";
       restoreVoiceReplyVolume();
     },
     onDisconnect: () => {
@@ -670,6 +690,7 @@ export default function HomePage() {
       setIsVoiceAgentSpeaking(false);
       muteNextVoiceReplyRef.current = false;
       suppressNextPlanRecitalRef.current = false;
+      voiceAgentPartialTextRef.current = "";
       restoreVoiceReplyVolume();
       if (sessionActiveRef.current && coachingStartModeRef.current === "voice") {
         setStatusMessage("Voice channel disconnected. You can continue by text or reconnect voice.");
@@ -682,6 +703,7 @@ export default function HomePage() {
       setIsVoiceAgentSpeaking(false);
       muteNextVoiceReplyRef.current = false;
       suppressNextPlanRecitalRef.current = false;
+      voiceAgentPartialTextRef.current = "";
       restoreVoiceReplyVolume();
       setErrorMessage(resolved);
     },
@@ -713,6 +735,31 @@ export default function HomePage() {
         setVoiceChannelStatus("disconnected");
       }
     },
+    onAgentChatResponsePart: ({ text, type }) => {
+      if (type === "start") {
+        voiceAgentPartialTextRef.current = "";
+      }
+
+      if (typeof text === "string" && text) {
+        voiceAgentPartialTextRef.current += text;
+      }
+
+      const partial = voiceAgentPartialTextRef.current;
+      const hasToolLeak = TOOL_LEAK_PATTERN.test(partial);
+      const hasPlanDetailRecital = PLAN_DETAIL_RECITAL_PATTERN.test(partial);
+      const shouldMuteLiveAudio =
+        coachingStartModeRef.current === "voice" &&
+        voiceChannelStatusRef.current === "connected" &&
+        (hasToolLeak || (suppressNextPlanRecitalRef.current && hasPlanDetailRecital));
+
+      if (shouldMuteLiveAudio && !voiceReplyMutedRef.current) {
+        muteCurrentVoiceReplyAudio();
+      }
+
+      if (type === "stop") {
+        voiceAgentPartialTextRef.current = "";
+      }
+    },
     onMessage: (payload) => {
       const rawMessage = typeof payload?.message === "string" ? payload.message : "";
       if (!rawMessage.trim()) {
@@ -726,6 +773,7 @@ export default function HomePage() {
           toolEnvelope.toolCalls.some(
             (toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan"
           ) || hasSaveActionToolCallText(rawMessage);
+        const hasToolLeakText = TOOL_LEAK_PATTERN.test(rawMessage);
         const latestUserMessage =
           [...chatMessagesRef.current].reverse().find((message) => message.role === "user")?.content ?? "";
         const rawToolPlanItems = normalizeActionItems(
@@ -750,15 +798,17 @@ export default function HomePage() {
           }
         }
         const shouldCollapsePlanRecital =
-          hasSaveActionTool &&
+          (hasSaveActionTool || hasToolLeakText) &&
           (suppressNextPlanRecitalRef.current || isPlanApprovalText(latestUserMessage)) &&
-          (PLAN_OUTPUT_PATTERN.test(rawMessage) ||
-            /owner|deadline|timeline|success[_\s-]?signal|action_plan/i.test(rawMessage));
-        if (shouldCollapsePlanRecital && coachingStartModeRef.current === "voice") {
-          muteNextVoiceReplyAudio();
+          (PLAN_OUTPUT_PATTERN.test(rawMessage) || PLAN_DETAIL_RECITAL_PATTERN.test(rawMessage) || hasToolLeakText);
+        if (coachingStartModeRef.current === "voice" && (shouldCollapsePlanRecital || hasToolLeakText)) {
+          muteCurrentVoiceReplyAudio();
         }
+        const sanitizedToolText = hasToolLeakText ? stripToolCallArtifacts(rawMessage) : "";
         const assistantText = (
-          shouldCollapsePlanRecital ? ACTION_HUB_CONFIRMATION_MESSAGE : toolEnvelope.displayText || rawMessage
+          shouldCollapsePlanRecital
+            ? ACTION_HUB_CONFIRMATION_MESSAGE
+            : sanitizedToolText || toolEnvelope.displayText || rawMessage
         ).trim();
         if (shouldCollapsePlanRecital) {
           suppressNextPlanRecitalRef.current = false;
@@ -1129,6 +1179,7 @@ export default function HomePage() {
     }
     muteNextVoiceReplyRef.current = false;
     suppressNextPlanRecitalRef.current = false;
+    voiceAgentPartialTextRef.current = "";
     restoreVoiceReplyVolume();
     try {
       await elevenConversation.endSession();
