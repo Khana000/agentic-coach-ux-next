@@ -52,7 +52,7 @@ export async function POST(request: Request) {
   const actionText = payload.actionText?.trim();
   const coacheeName = payload.coacheeName?.trim() || "Coachee";
   const resendApiKey = process.env.RESEND_API_KEY;
-  const fromEmail = process.env.CALENDAR_FROM_EMAIL;
+  const fromEmail = process.env.CALENDAR_FROM_EMAIL || process.env.ACTION_PLAN_FROM_EMAIL;
 
   if (!toEmail || !actionText) {
     return NextResponse.json({ error: "Missing toEmail or actionText." }, { status: 400 });
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          "Email invite is not configured. Set RESEND_API_KEY and CALENDAR_FROM_EMAIL."
+          "Email invite is not configured. Set RESEND_API_KEY and CALENDAR_FROM_EMAIL (or ACTION_PLAN_FROM_EMAIL)."
       },
       { status: 500 }
     );
