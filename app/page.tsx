@@ -78,9 +78,9 @@ const INITIAL_COACH_MESSAGE =
 const PLAN_INTENT_PATTERN =
   /\b(create|build|make|generate|draft|prepare|show|give)\b[\s\w]{0,40}\b(coaching plan|action plan|development plan|plan)\b|\b(action plan|development plan|coaching plan)\b/i;
 const PLAN_NEGATIVE_PATTERN = /\b(don't|do not|not now|no plan|without plan)\b/i;
-const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(action plan|development plan)\b/im;
+const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const PLAN_APPROVAL_PATTERN =
-  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it)\b/i;
+  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan)\b/i;
 const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
 
 const COACH_ENDING_MESSAGE =
@@ -317,16 +317,33 @@ const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
 
 const extractActionItemsFromText = (text: string) => {
   const bulletPattern = /^\s*([-*+]\s+|\d+[.)]\s+)(.+)$/;
+  const actionLinePattern = /^\s*(action|step)\s*\d*\s*[:\-]\s+(.+)$/i;
   const lines = text.split("\n");
   const result: string[] = [];
 
   for (const line of lines) {
-    const match = line.match(bulletPattern);
-    if (!match) {
-      continue;
+    const bulletMatch = line.match(bulletPattern);
+    const actionLineMatch = line.match(actionLinePattern);
+    const tableCells = line.includes("|")
+      ? line
+          .split("|")
+          .map((cell) => cell.trim())
+          .filter(Boolean)
+      : [];
+
+    let item = "";
+    if (bulletMatch) {
+      item = bulletMatch[2].trim();
+    } else if (actionLineMatch) {
+      item = actionLineMatch[2].trim();
+    } else if (
+      tableCells.length >= 2 &&
+      !/^:?-{2,}:?$/.test(tableCells[0]) &&
+      !/^action$/i.test(tableCells[0])
+    ) {
+      item = tableCells[0].match(/^\d+$/) ? tableCells[1] : tableCells[0];
     }
 
-    const item = match[2].trim();
     if (!item) {
       continue;
     }
@@ -784,7 +801,10 @@ export default function HomePage() {
     }
 
     const planItemsFromMessage = extractActionItemsFromText(lastMessage.content);
-    if (!PLAN_OUTPUT_PATTERN.test(lastMessage.content) || planItemsFromMessage.length === 0) {
+    const hasPlanSignal =
+      PLAN_OUTPUT_PATTERN.test(lastMessage.content) ||
+      /does this action plan work for you\??/i.test(lastMessage.content);
+    if (!hasPlanSignal || planItemsFromMessage.length === 0) {
       return;
     }
 
@@ -831,6 +851,49 @@ export default function HomePage() {
     }
 
     finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
+  }, [chatMessages]);
+
+  useEffect(() => {
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (lastMessage?.role !== "user") {
+      return;
+    }
+
+    const text = lastMessage.content.trim();
+    if (!text || PLAN_REJECTION_PATTERN.test(text) || !PLAN_APPROVAL_PATTERN.test(text)) {
+      return;
+    }
+
+    if (pendingPlanSignatureRef.current) {
+      return;
+    }
+
+    const previousAssistant = [...chatMessages]
+      .slice(0, -1)
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (!previousAssistant) {
+      return;
+    }
+
+    const hasPlanSignal =
+      PLAN_OUTPUT_PATTERN.test(previousAssistant.content) ||
+      /does this action plan work for you\??/i.test(previousAssistant.content);
+    if (!hasPlanSignal) {
+      return;
+    }
+
+    const planItems = extractActionItemsFromText(previousAssistant.content);
+    if (planItems.length === 0) {
+      return;
+    }
+
+    const signature = buildActionPlanSignature(planItems);
+    if (!signature || signature === appliedPlanSignatureRef.current) {
+      return;
+    }
+
+    finalizeActionPlan(planItems, signature);
   }, [chatMessages]);
 
   useEffect(() => {

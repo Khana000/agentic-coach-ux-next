@@ -185,7 +185,7 @@ const extractAssistantToolCalls = (rawText: string) => {
 };
 
 const isAffirmative = (text: string) =>
-  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good)\b/i.test(
+  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good|i agree|agreed|approved|approve|finali[sz]e|confirm|works for me|good plan)\b/i.test(
     text
   );
 
