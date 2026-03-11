@@ -24,8 +24,6 @@ const CLARIFICATION_PROMPT_PATTERN =
 const END_SESSION_QUESTION = "Would you like to end the coaching session now?";
 const END_SESSION_CLOSING_TEXT =
   "Hopefully you found this of use, look forward to our next session, thanks";
-const PLAN_CONFIRMED_ACTION_HUB_TEXT =
-  "Great, your action plan is confirmed and moved to Action Hub. You can set or adjust deadlines using the calendar dropdown in Action Hub.";
 const END_SESSION_TOOL_CALL_PATTERN = /\bcalling\s*tool\s*:?\s*end_session\b/i;
 
 type AssistantToolCall = {
@@ -187,7 +185,7 @@ const extractAssistantToolCalls = (rawText: string) => {
 };
 
 const isAffirmative = (text: string) =>
-  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good|sounds fine|i agree|agreed|approved|approve|finali[sz]e|confirm|works for me|that works|all good|good plan|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine)\b/i.test(
+  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good|i agree|agreed|approved|approve|finali[sz]e|confirm|works for me|good plan)\b/i.test(
     text
   );
 
@@ -1075,12 +1073,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ text: END_SESSION_CLOSING_TEXT, endSession: true });
   }
 
-  if (hasUserApprovedPlanFeasibility) {
-    return NextResponse.json({
-      text: `${PLAN_CONFIRMED_ACTION_HUB_TEXT} Would you like to continue coaching, or end the session?`
-    });
-  }
-
   const managerSupportRequested =
     !managerSupportDeclinedThisTurn &&
     (explicitManagerSupportRequested || hasUserAcceptedManagerSupport);
@@ -1150,7 +1142,7 @@ export async function POST(request: Request) {
   const ragKnowledge = retrieveCoachingKnowledge(
     `${latestUserMessage} ${payload.context ?? ""} grow disc gestalt heron sdi action plan empathy`
   );
-  const maxResponseTokens = planRequested ? 180 : 140;
+  const maxResponseTokens = planRequested ? 220 : 200;
   const systemPrompt = [
     "You are an executive coaching assistant.",
     `The user selected a ${coachGender} coach persona.`,
