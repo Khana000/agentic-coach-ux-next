@@ -40,8 +40,8 @@ const normalizeToolCallName = (name: string) =>
     .toLowerCase()
     .replace(/[:\s-]+/g, "_");
 
-const TOOL_CALL_START_PATTERN = /(?:\(\s*)?calling tool\b/i;
-const TOOL_CALL_NAME_PATTERN = /(?:\(\s*)?calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
+const TOOL_CALL_START_PATTERN = /\(\s*calling tool\b/i;
+const TOOL_CALL_NAME_PATTERN = /\(\s*calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
 
 const findToolCallBlockEnd = (text: string, startIndex: number) => {
   let depth = 0;
@@ -94,7 +94,7 @@ const findToolCallBlockEnd = (text: string, startIndex: number) => {
 
 const stripToolCallArtifacts = (text: string) =>
   text
-    .replace(/(?:\(\s*)?calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
+    .replace(/\(\s*calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
     .replace(/^\s*calling tool\b.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

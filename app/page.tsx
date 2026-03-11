@@ -160,8 +160,8 @@ const normalizeToolCallName = (name: string) =>
     .toLowerCase()
     .replace(/[:\s-]+/g, "_");
 
-const TOOL_CALL_START_PATTERN = /(?:\(\s*)?calling tool\b/i;
-const TOOL_CALL_NAME_PATTERN = /(?:\(\s*)?calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
+const TOOL_CALL_START_PATTERN = /\(\s*calling tool\b/i;
+const TOOL_CALL_NAME_PATTERN = /\(\s*calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
 
 const findToolCallBlockEnd = (text: string, startIndex: number) => {
   let depth = 0;
@@ -214,13 +214,10 @@ const findToolCallBlockEnd = (text: string, startIndex: number) => {
 
 const stripToolCallArtifacts = (text: string) =>
   text
-    .replace(/(?:\(\s*)?calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
+    .replace(/\(\s*calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
     .replace(/^\s*calling tool\b.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-
-const hasSaveActionToolCallText = (rawText: string) =>
-  /\bcalling tool\s*:?\s*save[_\s-]?action[_\s-]?plan\b/i.test(rawText);
 
 const tryParseToolPayload = (rawPayload: string): unknown => {
   const trimmed = rawPayload.trim();
@@ -299,17 +296,11 @@ const extractAssistantToolCalls = (rawText: string) => {
 };
 
 const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
-  let sourcePayload = payload;
-
-  if (typeof sourcePayload === "string") {
-    sourcePayload = tryParseToolPayload(sourcePayload);
-  }
-
-  if (!sourcePayload || typeof sourcePayload !== "object") {
+  if (!payload || typeof payload !== "object") {
     return [];
   }
 
-  const source = sourcePayload as Record<string, unknown>;
+  const source = payload as Record<string, unknown>;
   const rawItems = source.action_plan ?? source.actions ?? source.plan ?? [];
   if (!Array.isArray(rawItems)) {
     return [];
@@ -324,21 +315,6 @@ const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
       return action ? { action } : null;
     })
     .filter((item): item is ToolPlanItem => Boolean(item));
-};
-
-const extractPlanItemsFromToolRaw = (rawText: string): ToolPlanItem[] => {
-  const actionPattern = /"action"\s*:\s*"([^"]+)"/gi;
-  const actions: string[] = [];
-  let match = actionPattern.exec(rawText);
-  while (match) {
-    const action = String(match[1] ?? "").replace(/\\"/g, "\"").trim();
-    if (action) {
-      actions.push(action);
-    }
-    match = actionPattern.exec(rawText);
-  }
-
-  return normalizeActionItems(actions).map((action) => ({ action }));
 };
 
 const extractActionItemsFromText = (text: string) => {
@@ -497,7 +473,6 @@ export default function HomePage() {
   const voiceBootingRef = useRef(false);
   const voiceAutoConnectAttemptedRef = useRef(false);
   const voiceChannelStatusRef = useRef<VoiceChannelStatus>(voiceChannelStatus);
-  const suppressNextPlanRecitalRef = useRef(false);
 
   const selectedCoach = coachProfiles[coachGender];
 
@@ -565,11 +540,7 @@ export default function HomePage() {
       return false;
     }
 
-    const finalized = finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
-    if (finalized) {
-      suppressNextPlanRecitalRef.current = true;
-    }
-    return finalized;
+    return finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
   };
 
   const importTranscriptActionsToHub = () => {
@@ -663,44 +634,18 @@ export default function HomePage() {
       const isAssistant = payload?.role === "agent";
       if (isAssistant) {
         const toolEnvelope = extractAssistantToolCalls(rawMessage);
-        const hasSaveActionTool =
-          toolEnvelope.toolCalls.some(
-            (toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan"
-          ) || hasSaveActionToolCallText(rawMessage);
+        const hasSaveActionTool = toolEnvelope.toolCalls.some(
+          (toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan"
+        );
         const latestUserMessage =
           [...chatMessagesRef.current].reverse().find((message) => message.role === "user")?.content ?? "";
-        const rawToolPlanItems = normalizeActionItems(
-          toolEnvelope.toolCalls.flatMap((toolCall) => {
-            const fromPayload = extractPlanItemsFromToolPayload(toolCall.payload);
-            if (fromPayload.length > 0) {
-              return fromPayload.map((item) => item.action);
-            }
-            return extractPlanItemsFromToolRaw(toolCall.raw).map((item) => item.action);
-          })
-        );
-        if (
-          hasSaveActionTool &&
-          isPlanApprovalText(latestUserMessage) &&
-          rawToolPlanItems.length > 0 &&
-          !pendingPlanSignatureRef.current
-        ) {
-          const signature = buildActionPlanSignature(rawToolPlanItems);
-          if (signature && signature !== appliedPlanSignatureRef.current) {
-            finalizeActionPlan(rawToolPlanItems, signature);
-            suppressNextPlanRecitalRef.current = true;
-          }
-        }
         const shouldCollapsePlanRecital =
           hasSaveActionTool &&
-          (suppressNextPlanRecitalRef.current || isPlanApprovalText(latestUserMessage)) &&
-          (PLAN_OUTPUT_PATTERN.test(rawMessage) ||
-            /owner|deadline|timeline|success[_\s-]?signal|action_plan/i.test(rawMessage));
+          isPlanApprovalText(latestUserMessage) &&
+          (PLAN_OUTPUT_PATTERN.test(rawMessage) || /owner|timeline|success[_\s-]?signal/i.test(rawMessage));
         const assistantText = (
           shouldCollapsePlanRecital ? ACTION_HUB_CONFIRMATION_MESSAGE : toolEnvelope.displayText || rawMessage
         ).trim();
-        if (shouldCollapsePlanRecital) {
-          suppressNextPlanRecitalRef.current = false;
-        }
         if (assistantText) {
           appendLiveMessage("assistant", assistantText);
         }
@@ -1795,16 +1740,11 @@ export default function HomePage() {
       const name = normalizeToolCallName(toolCall.name);
 
       if (name === "save_action_plan") {
-        const planItems = [
-          ...extractPlanItemsFromToolPayload(toolCall.payload),
-          ...extractPlanItemsFromToolRaw(toolCall.raw)
-        ];
+        const planItems = extractPlanItemsFromToolPayload(toolCall.payload);
         setExecutionToolsEnabled(true);
 
         if (planItems.length > 0) {
-          const actionOnlyItems = normalizeActionItems(
-            planItems.map((item) => item.action.trim()).filter(Boolean)
-          );
+          const actionOnlyItems = planItems.map((item) => item.action.trim()).filter(Boolean);
           const signature = buildActionPlanSignature(actionOnlyItems);
           if (!signature || signature === appliedPlanSignatureRef.current) {
             continue;
@@ -1818,12 +1758,14 @@ export default function HomePage() {
             [...chatMessagesRef.current]
               .reverse()
               .find((message) => message.role === "user")?.content ?? "";
-          const alreadyAgreed = Boolean(latestUserMessage) && isPlanApprovalText(latestUserMessage);
+          const alreadyAgreed =
+            Boolean(latestUserMessage) &&
+            PLAN_APPROVAL_PATTERN.test(latestUserMessage) &&
+            !PLAN_REJECTION_PATTERN.test(latestUserMessage);
 
           if (alreadyAgreed) {
             if (finalizeActionPlan(actionOnlyItems, signature)) {
-              suppressNextPlanRecitalRef.current = true;
-              savedPlanActions += actionOnlyItems.length;
+              savedPlanActions += planItems.length;
             }
           }
         }
