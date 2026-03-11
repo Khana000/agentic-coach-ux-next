@@ -486,7 +486,6 @@ export default function HomePage() {
   );
   const [isSendingPlanEmail, setIsSendingPlanEmail] = useState(false);
   const [isSendingCalendarInvite, setIsSendingCalendarInvite] = useState(false);
-  const [calendarInviteActionInFlight, setCalendarInviteActionInFlight] = useState<string | null>(null);
   const [isSendingAllCalendarInvites, setIsSendingAllCalendarInvites] = useState(false);
   const [isSendingCombinedDelivery, setIsSendingCombinedDelivery] = useState(false);
 
@@ -514,10 +513,6 @@ export default function HomePage() {
 
   const reminderItemsSorted = useMemo(
     () => [...reminders].sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
-    [reminders]
-  );
-  const inviteSentActionKeys = useMemo(
-    () => new Set(reminders.map((item) => item.action.trim().toLowerCase()).filter(Boolean)),
     [reminders]
   );
   const transcriptActionItems = useMemo(() => {
@@ -1768,7 +1763,6 @@ export default function HomePage() {
 
     setErrorMessage("");
     setIsSendingCalendarInvite(true);
-    setCalendarInviteActionInFlight(actionText);
 
     try {
       const result = await postCalendarInvite(toEmail, actionText, start);
@@ -1782,7 +1776,6 @@ export default function HomePage() {
       setErrorMessage(error instanceof Error ? error.message : "Unable to send calendar invite.");
     } finally {
       setIsSendingCalendarInvite(false);
-      setCalendarInviteActionInFlight(null);
     }
   };
 
@@ -2475,12 +2468,6 @@ export default function HomePage() {
                               </div>
                             </div>
                             <div className="action-hub-menu">
-                              {(() => {
-                                const itemKey = item.trim().toLowerCase();
-                                const inviteSent = inviteSentActionKeys.has(itemKey);
-                                const isSendingThisAction =
-                                  isSendingCalendarInvite && calendarInviteActionInFlight === item;
-                                return (
                               <Button
                                 type="button"
                                 variant="outline"
@@ -2488,18 +2475,11 @@ export default function HomePage() {
                                 disabled={
                                   isSendingCalendarInvite ||
                                   isSendingAllCalendarInvites ||
-                                  isSendingCombinedDelivery ||
-                                  inviteSent
+                                  isSendingCombinedDelivery
                                 }
                               >
-                                {isSendingThisAction
-                                  ? "Sending..."
-                                  : inviteSent
-                                  ? "Invite sent"
-                                  : "Send invite"}
+                                {isSendingCalendarInvite ? "Sending..." : "Send invite"}
                               </Button>
-                                );
-                              })()}
                             </div>
                           </div>
                         ))}
