@@ -65,7 +65,6 @@ const DEFAULT_ELEVENLABS_VOICE_ID_FEMALE = "gJx1vCzNCD1EQHT212Ls";
 const VOICE_CONNECT_TIMEOUT_MS = 5_000;
 const VOICE_TOKEN_TIMEOUT_MS = 2_500;
 const VOICE_LAST_ATTEMPT_STORAGE_KEY = "agenticCoach.voice.lastAttempt.v1";
-const VOICE_REPLY_MUTE_MS = 6_000;
 const TEST_TRIAL_STATUS: TrialStatus = {
   sessionsLimit: 999,
   sessionsUsed: 0,
@@ -499,9 +498,6 @@ export default function HomePage() {
   const voiceAutoConnectAttemptedRef = useRef(false);
   const voiceChannelStatusRef = useRef<VoiceChannelStatus>(voiceChannelStatus);
   const suppressNextPlanRecitalRef = useRef(false);
-  const muteNextVoiceReplyRef = useRef(false);
-  const voiceReplyMutedRef = useRef(false);
-  const voiceReplyUnmuteTimerRef = useRef<number | null>(null);
 
   const selectedCoach = coachProfiles[coachGender];
 
@@ -572,9 +568,6 @@ export default function HomePage() {
     const finalized = finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
     if (finalized) {
       suppressNextPlanRecitalRef.current = true;
-      if (coachingStartModeRef.current === "voice" && voiceChannelStatusRef.current === "connected") {
-        muteNextVoiceReplyAudio();
-      }
     }
     return finalized;
   };
@@ -625,52 +618,15 @@ export default function HomePage() {
       ? process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID_FEMALE?.trim() || DEFAULT_ELEVENLABS_VOICE_ID_FEMALE
       : process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID_MALE?.trim() || DEFAULT_ELEVENLABS_VOICE_ID_MALE;
 
-  const clearVoiceMuteTimer = () => {
-    if (voiceReplyUnmuteTimerRef.current !== null && typeof window !== "undefined") {
-      window.clearTimeout(voiceReplyUnmuteTimerRef.current);
-      voiceReplyUnmuteTimerRef.current = null;
-    }
-  };
-
-  const restoreVoiceReplyVolume = () => {
-    if (!voiceReplyMutedRef.current) {
-      clearVoiceMuteTimer();
-      return;
-    }
-    try {
-      elevenConversation.setVolume({ volume: 1 });
-    } catch {
-      // no-op
-    }
-    voiceReplyMutedRef.current = false;
-    clearVoiceMuteTimer();
-  };
-
-  const muteNextVoiceReplyAudio = () => {
-    muteNextVoiceReplyRef.current = true;
-    clearVoiceMuteTimer();
-    if (typeof window !== "undefined") {
-      voiceReplyUnmuteTimerRef.current = window.setTimeout(() => {
-        restoreVoiceReplyVolume();
-        muteNextVoiceReplyRef.current = false;
-      }, VOICE_REPLY_MUTE_MS);
-    }
-  };
-
   const elevenConversation = useConversation({
     onConnect: () => {
       setVoiceChannelStatus("connected");
       setErrorMessage("");
       setStatusMessage("Voice channel connected. Speak naturally.");
-      muteNextVoiceReplyRef.current = false;
-      restoreVoiceReplyVolume();
     },
     onDisconnect: () => {
       setVoiceChannelStatus("disconnected");
       setIsVoiceAgentSpeaking(false);
-      muteNextVoiceReplyRef.current = false;
-      suppressNextPlanRecitalRef.current = false;
-      restoreVoiceReplyVolume();
       if (sessionActiveRef.current && coachingStartModeRef.current === "voice") {
         setStatusMessage("Voice channel disconnected. You can continue by text or reconnect voice.");
       }
@@ -680,24 +636,9 @@ export default function HomePage() {
         typeof message === "string" && message.trim() ? message : "Voice channel error.";
       setVoiceChannelStatus("disconnected");
       setIsVoiceAgentSpeaking(false);
-      muteNextVoiceReplyRef.current = false;
-      suppressNextPlanRecitalRef.current = false;
-      restoreVoiceReplyVolume();
       setErrorMessage(resolved);
     },
     onModeChange: ({ mode }) => {
-      if (mode === "speaking" && muteNextVoiceReplyRef.current) {
-        try {
-          elevenConversation.setVolume({ volume: 0 });
-          voiceReplyMutedRef.current = true;
-        } catch {
-          // no-op
-        }
-      }
-      if (mode === "listening" && voiceReplyMutedRef.current) {
-        restoreVoiceReplyVolume();
-        muteNextVoiceReplyRef.current = false;
-      }
       setIsVoiceAgentSpeaking(mode === "speaking");
     },
     onStatusChange: ({ status }) => {
@@ -754,9 +695,6 @@ export default function HomePage() {
           (suppressNextPlanRecitalRef.current || isPlanApprovalText(latestUserMessage)) &&
           (PLAN_OUTPUT_PATTERN.test(rawMessage) ||
             /owner|deadline|timeline|success[_\s-]?signal|action_plan/i.test(rawMessage));
-        if (shouldCollapsePlanRecital && coachingStartModeRef.current === "voice") {
-          muteNextVoiceReplyAudio();
-        }
         const assistantText = (
           shouldCollapsePlanRecital ? ACTION_HUB_CONFIRMATION_MESSAGE : toolEnvelope.displayText || rawMessage
         ).trim();
@@ -777,7 +715,7 @@ export default function HomePage() {
       if (finalized && coachingStartModeRef.current === "voice") {
         try {
           elevenConversation.sendContextualUpdate(
-            "Action plan is confirmed and saved to Action Hub. Do not read any plan details, owner, timeline, success-signal, payload, or JSON. Reply with one short confirmation only."
+            "Action plan is confirmed and saved to Action Hub. Respond with a brief acknowledgement and do not repeat action owner or deadline fields."
           );
         } catch {
           // no-op
@@ -789,13 +727,6 @@ export default function HomePage() {
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
-
-  useEffect(
-    () => () => {
-      clearVoiceMuteTimer();
-    },
-    []
-  );
 
   useEffect(() => {
     sessionActiveRef.current = sessionActive;
@@ -1127,9 +1058,6 @@ export default function HomePage() {
     if (!options?.preserveBooting) {
       voiceBootingRef.current = false;
     }
-    muteNextVoiceReplyRef.current = false;
-    suppressNextPlanRecitalRef.current = false;
-    restoreVoiceReplyVolume();
     try {
       await elevenConversation.endSession();
     } catch {
@@ -1160,20 +1088,6 @@ export default function HomePage() {
       }, 150);
     });
   };
-
-  const buildVoiceConversationOverrides = () => ({
-    agent: {
-      prompt: {
-        prompt:
-          "Never speak or print tool plumbing such as 'Calling tool', 'payload', JSON, or function names. " +
-          "When the coachee agrees to an action plan, do not repeat owner/deadline/success-signal fields. " +
-          "Use one short confirmation sentence only, then continue normal coaching."
-      }
-    },
-    tts: {
-      voiceId: resolveElevenLabsVoiceId(coachGender)
-    }
-  });
 
   const startVoiceSession = async () => {
     if (voiceBootingRef.current) {
@@ -1257,16 +1171,14 @@ export default function HomePage() {
           label: "token + webrtc",
           options: {
             conversationToken,
-            connectionType: "webrtc",
-            overrides: buildVoiceConversationOverrides()
+            connectionType: "webrtc"
           }
         });
         attempts.push({
           label: "token + websocket",
           options: {
             conversationToken,
-            connectionType: "websocket",
-            overrides: buildVoiceConversationOverrides()
+            connectionType: "websocket"
           }
         });
       }
@@ -1274,16 +1186,14 @@ export default function HomePage() {
         label: "agent + webrtc",
         options: {
           agentId,
-          connectionType: "webrtc",
-          overrides: buildVoiceConversationOverrides()
+          connectionType: "webrtc"
         }
       });
       attempts.push({
         label: "agent + websocket",
         options: {
           agentId,
-          connectionType: "websocket",
-          overrides: buildVoiceConversationOverrides()
+          connectionType: "websocket"
         }
       });
 
