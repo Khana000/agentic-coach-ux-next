@@ -16,7 +16,8 @@ type ChatRequest = {
 const PLAN_OPT_IN_QUESTION = "Would you like me to create a coaching plan for you?";
 const MANAGER_MEETING_QUESTION =
   "Would you like to set up a meeting with your manager to align on what support they can provide?";
-const PLAN_FEASIBILITY_QUESTION = "Does this action plan work for you?";
+const PLAN_FEASIBILITY_QUESTION =
+  "Does this action plan work for you? If you are happy, I will move it to Action Hub where you can add the coachee email and set individual action dates in the calendar fields.";
 const PLAN_STRUCTURED_OUTPUT_PATTERN =
   /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const CLARIFICATION_PROMPT_PATTERN =
@@ -185,7 +186,7 @@ const extractAssistantToolCalls = (rawText: string) => {
 };
 
 const isAffirmative = (text: string) =>
-  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good|i agree|agreed|approved|approve|finali[sz]e|confirm|works for me|good plan)\b/i.test(
+  /\b(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|let's do it|create one|create it|sounds good|i agree|agreed|approved|approve|finali[sz]e|confirm|works for me|good plan|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine)\b/i.test(
     text
   );
 

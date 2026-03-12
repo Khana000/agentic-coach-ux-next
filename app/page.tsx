@@ -80,7 +80,7 @@ const PLAN_INTENT_PATTERN =
 const PLAN_NEGATIVE_PATTERN = /\b(don't|do not|not now|no plan|without plan)\b/i;
 const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const PLAN_APPROVAL_PATTERN =
-  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan)\b/i;
+  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine)\b/i;
 const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
 
 const COACH_ENDING_MESSAGE =
@@ -517,7 +517,9 @@ export default function HomePage() {
     clearPendingActionPlan();
     setExecutionToolsEnabled(true);
     setActionHubItems(normalized);
-    setStatusMessage("Action plan finalised and moved to Action Hub.");
+    setStatusMessage(
+      "Action plan finalised and moved to Action Hub. Add the coachee email and set reminder date/time per action."
+    );
     return true;
   };
 
@@ -823,7 +825,7 @@ export default function HomePage() {
     pendingPlanAssistantIndexRef.current = chatMessages.length - 1;
     setExecutionToolsEnabled(true);
     setStatusMessage(
-      "Action plan created. If the coachee agrees, I will keep it in Action Hub."
+      "Action plan created. Once the coachee says yes/happy/fine, it will move to Action Hub."
     );
   }, [chatMessages]);
 
@@ -2170,7 +2172,10 @@ export default function HomePage() {
                     </>
                   ) : actionHubItems.length === 0 ? (
                     <>
-                      <p className="info">No finalised actions yet. Confirm the proposed action plan to move it here.</p>
+                      <p className="info">
+                        No finalised actions yet. Confirm the proposed action plan (for example: yes / happy with it)
+                        to move it here.
+                      </p>
                       {transcriptActionItems.length > 0 ? (
                         <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
                           Import {transcriptActionItems.length} action{transcriptActionItems.length === 1 ? "" : "s"} from transcript
