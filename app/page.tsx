@@ -158,8 +158,8 @@ const normalizeToolCallName = (name: string) =>
     .toLowerCase()
     .replace(/[:\s-]+/g, "_");
 
-const TOOL_CALL_START_PATTERN = /\(\s*calling tool\b/i;
-const TOOL_CALL_NAME_PATTERN = /\(\s*calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
+const TOOL_CALL_START_PATTERN = /(?:\(\s*)?calling tool\b/i;
+const TOOL_CALL_NAME_PATTERN = /(?:\(\s*)?calling tool\s*:?\s*([a-zA-Z0-9_:-]+)/i;
 
 const findToolCallBlockEnd = (text: string, startIndex: number) => {
   let depth = 0;
@@ -212,7 +212,7 @@ const findToolCallBlockEnd = (text: string, startIndex: number) => {
 
 const stripToolCallArtifacts = (text: string) =>
   text
-    .replace(/\(\s*calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
+    .replace(/(?:\(\s*)?calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
     .replace(/^\s*calling tool\b.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -293,12 +293,59 @@ const extractAssistantToolCalls = (rawText: string) => {
   return { displayText, toolCalls };
 };
 
-const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
-  if (!payload || typeof payload !== "object") {
+const coerceAssistantToolCall = (value: unknown): AssistantToolCall | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const name = normalizeToolCallName(String(record.name ?? ""));
+  if (!name) {
+    return null;
+  }
+
+  const payload = record.payload;
+  let payloadText = "";
+  if (payload !== undefined) {
+    try {
+      payloadText = ` with payload ${JSON.stringify(payload)}`;
+    } catch {
+      payloadText = " with payload [unserializable]";
+    }
+  }
+  const raw =
+    typeof record.raw === "string" && record.raw.trim().length > 0
+      ? record.raw.trim()
+      : `(Calling tool ${name}${payloadText})`;
+
+  return {
+    name,
+    payload,
+    raw
+  };
+};
+
+const extractAssistantToolCallsFromApi = (toolCalls: unknown): AssistantToolCall[] => {
+  if (!Array.isArray(toolCalls)) {
     return [];
   }
 
-  const source = payload as Record<string, unknown>;
+  return toolCalls
+    .map((toolCall) => coerceAssistantToolCall(toolCall))
+    .filter((toolCall): toolCall is AssistantToolCall => Boolean(toolCall));
+};
+
+const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
+  let sourcePayload = payload;
+  if (typeof sourcePayload === "string") {
+    sourcePayload = tryParseToolPayload(sourcePayload);
+  }
+
+  if (!sourcePayload || typeof sourcePayload !== "object") {
+    return [];
+  }
+
+  const source = sourcePayload as Record<string, unknown>;
   const rawItems = source.action_plan ?? source.actions ?? source.plan ?? [];
   if (!Array.isArray(rawItems)) {
     return [];
@@ -313,6 +360,22 @@ const extractPlanItemsFromToolPayload = (payload: unknown): ToolPlanItem[] => {
       return action ? { action } : null;
     })
     .filter((item): item is ToolPlanItem => Boolean(item));
+};
+
+const extractPlanItemsFromToolRaw = (rawText: string): ToolPlanItem[] => {
+  const actionPattern = /"action"\s*:\s*"([^"]+)"/gi;
+  const actions: string[] = [];
+
+  let match = actionPattern.exec(rawText);
+  while (match) {
+    const action = String(match[1] ?? "").replace(/\\"/g, "\"").trim();
+    if (action) {
+      actions.push(action);
+    }
+    match = actionPattern.exec(rawText);
+  }
+
+  return normalizeActionItems(actions).map((action) => ({ action }));
 };
 
 const extractActionItemsFromText = (text: string) => {
@@ -885,7 +948,10 @@ export default function HomePage() {
       return;
     }
 
-    const planItems = extractActionItemsFromText(previousAssistant.content);
+    const planItems = normalizeActionItems([
+      ...extractActionItemsFromText(previousAssistant.content),
+      ...extractPlanItemsFromToolRaw(previousAssistant.content).map((item) => item.action)
+    ]);
     if (planItems.length === 0) {
       return;
     }
@@ -1699,11 +1765,16 @@ export default function HomePage() {
       const name = normalizeToolCallName(toolCall.name);
 
       if (name === "save_action_plan") {
-        const planItems = extractPlanItemsFromToolPayload(toolCall.payload);
+        const planItems = [
+          ...extractPlanItemsFromToolPayload(toolCall.payload),
+          ...extractPlanItemsFromToolRaw(toolCall.raw)
+        ];
         setExecutionToolsEnabled(true);
 
         if (planItems.length > 0) {
-          const actionOnlyItems = planItems.map((item) => item.action.trim()).filter(Boolean);
+          const actionOnlyItems = normalizeActionItems(
+            planItems.map((item) => item.action.trim()).filter(Boolean)
+          );
           const signature = buildActionPlanSignature(actionOnlyItems);
           if (!signature || signature === appliedPlanSignatureRef.current) {
             continue;
@@ -1724,7 +1795,7 @@ export default function HomePage() {
 
           if (alreadyAgreed) {
             if (finalizeActionPlan(actionOnlyItems, signature)) {
-              savedPlanActions += planItems.length;
+              savedPlanActions += actionOnlyItems.length;
             }
           }
         }
@@ -1808,6 +1879,7 @@ export default function HomePage() {
         text?: string;
         endSession?: boolean;
         error?: string;
+        toolCalls?: unknown;
       };
 
       if (!response.ok) {
@@ -1817,6 +1889,8 @@ export default function HomePage() {
       const assistantRaw = String(data?.text ?? "");
       const toolEnvelope = extractAssistantToolCalls(assistantRaw);
       const assistantText = (toolEnvelope.displayText || assistantRaw).trim();
+      const responseToolCalls = extractAssistantToolCallsFromApi(data?.toolCalls);
+      const mergedToolCalls = [...responseToolCalls, ...toolEnvelope.toolCalls];
 
       if (assistantText) {
         const updatedMessages = [...nextMessages, { role: "assistant" as const, content: assistantText }];
@@ -1824,8 +1898,8 @@ export default function HomePage() {
         chatMessagesRef.current = updatedMessages;
       }
 
-      if (toolEnvelope.toolCalls.length > 0) {
-        await handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText || assistantRaw);
+      if (mergedToolCalls.length > 0) {
+        await handleAssistantToolCalls(mergedToolCalls, assistantText || assistantRaw);
       }
 
       if (data?.endSession) {
