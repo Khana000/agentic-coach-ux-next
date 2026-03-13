@@ -64,7 +64,10 @@ const DEFAULT_ELEVENLABS_VOICE_ID_MALE = "QF9HJC7XWnue5c9W3LkY";
 const DEFAULT_ELEVENLABS_VOICE_ID_FEMALE = "gJx1vCzNCD1EQHT212Ls";
 const VOICE_CONNECT_TIMEOUT_MS = 5_000;
 const VOICE_TOKEN_TIMEOUT_MS = 2_500;
+const VOICE_CONNECT_POLL_MS = 100;
 const VOICE_LAST_ATTEMPT_STORAGE_KEY = "agenticCoach.voice.lastAttempt.v1";
+const ENABLE_WEBSOCKET_VOICE_FALLBACK =
+  process.env.NEXT_PUBLIC_VOICE_ENABLE_WEBSOCKET_FALLBACK !== "false";
 const TEST_TRIAL_STATUS: TrialStatus = {
   sessionsLimit: 999,
   sessionsUsed: 0,
@@ -1055,7 +1058,7 @@ export default function HomePage() {
           window.clearInterval(intervalId);
           reject(new Error("Timed out waiting for voice channel connection."));
         }
-      }, 150);
+      }, VOICE_CONNECT_POLL_MS);
     });
   };
 
@@ -1144,13 +1147,6 @@ export default function HomePage() {
             connectionType: "webrtc"
           }
         });
-        attempts.push({
-          label: "token + websocket",
-          options: {
-            conversationToken,
-            connectionType: "websocket"
-          }
-        });
       }
       attempts.push({
         label: "agent + webrtc",
@@ -1159,13 +1155,24 @@ export default function HomePage() {
           connectionType: "webrtc"
         }
       });
-      attempts.push({
-        label: "agent + websocket",
-        options: {
-          agentId,
-          connectionType: "websocket"
+      if (ENABLE_WEBSOCKET_VOICE_FALLBACK) {
+        if (conversationToken) {
+          attempts.push({
+            label: "token + websocket",
+            options: {
+              conversationToken,
+              connectionType: "websocket"
+            }
+          });
         }
-      });
+        attempts.push({
+          label: "agent + websocket",
+          options: {
+            agentId,
+            connectionType: "websocket"
+          }
+        });
+      }
 
       if (typeof window !== "undefined") {
         const preferredLabel = window.localStorage.getItem(VOICE_LAST_ATTEMPT_STORAGE_KEY)?.trim();

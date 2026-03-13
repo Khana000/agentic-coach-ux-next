@@ -960,7 +960,7 @@ const hasStructuredPlanOutput = (text: string) => {
 
 export async function POST(request: Request) {
   const openaiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
+  const model = (process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini").trim() || "gpt-4o-mini";
   const antigravKey = process.env.ANTIGRAVITY_API_KEY;
   const antigravEndpoint = process.env.ANTIGRAVITY_ENDPOINT ?? "https://api.antigravity.com/v1/chat";
 
@@ -1143,7 +1143,7 @@ export async function POST(request: Request) {
   const ragKnowledge = retrieveCoachingKnowledge(
     `${latestUserMessage} ${payload.context ?? ""} grow disc gestalt heron sdi action plan empathy`
   );
-  const maxResponseTokens = planRequested ? 220 : 200;
+  const maxResponseTokens = planRequested ? 160 : 120;
   const systemPrompt = [
     "You are an executive coaching assistant.",
     `The user selected a ${coachGender} coach persona.`,
@@ -1213,7 +1213,7 @@ export async function POST(request: Request) {
     "Keep responses focused on coaching dialogue.",
     "Do not use the phrase 'we should get back to the coaching session'.",
     "Avoid repetitive transition phrases like 'First', 'Next', and 'Finally'.",
-    "Keep responses compact for speed: 60-140 words in coaching mode unless the user explicitly asks for more detail.",
+    "Keep responses compact for speed: 40-100 words in coaching mode unless the user explicitly asks for more detail.",
     "If the coachee says not to involve their manager or asks to send details to them directly, acknowledge that preference and continue coaching without reopening manager support flow.",
     managerSupportRequested
       ? "ManagerSupportMode is requested. Include concise manager-support guidance relevant to the coachee's current challenge (what support to ask for, and how to ask)."
