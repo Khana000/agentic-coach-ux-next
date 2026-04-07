@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import clientPromise from "../../../../lib/mongodb";
+import getMongoClient from "../../../../lib/mongodb";
 
 const COLLECTION = "sessions";
 const DB_NAME = process.env.MONGO_DB_NAME ?? "coaching";
@@ -51,7 +51,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
       return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
     }
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const db = client.db(DB_NAME);
     const session = await db.collection(COLLECTION).findOne({ _id: objectId });
 
@@ -110,7 +110,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
     updates.updatedAt = new Date();
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const db = client.db(DB_NAME);
     const result = await db
       .collection(COLLECTION)
@@ -141,7 +141,7 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
       return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
     }
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const db = client.db(DB_NAME);
     const result = await db.collection(COLLECTION).deleteOne({ _id: objectId });
 

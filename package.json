@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:action-hub-flow": "node tmp/action-hub-transfer-test.mjs"
   },
   "dependencies": {
     "@elevenlabs/react": "^0.14.1",
@@ -27,6 +28,8 @@
     "@types/node": "25.0.9",
     "@types/react": "19.2.8",
     "autoprefixer": "^10.4.24",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.5",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "5.9.3"

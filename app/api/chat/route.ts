@@ -98,6 +98,18 @@ const stripToolCallArtifacts = (text: string) =>
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+const INTERNAL_ASSISTANT_ARTIFACT_LINE_PATTERN =
+  /^\s*(?:\(\s*)?(?:calling\s*tool|tool\s*call|tool:|debug:)\b.*$/gim;
+const INTERNAL_ASSISTANT_JARGON_LINE_PATTERN =
+  /^\s*.*\b(payload|connector(?:s)?)\b.*$/gim;
+
+const sanitizeAssistantDisplayText = (text: string) =>
+  text
+    .replace(INTERNAL_ASSISTANT_ARTIFACT_LINE_PATTERN, "")
+    .replace(INTERNAL_ASSISTANT_JARGON_LINE_PATTERN, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
 const tryParseToolPayload = (rawPayload: string): unknown => {
   const trimmed = rawPayload.trim();
   if (!trimmed) {
@@ -1439,7 +1451,11 @@ export async function POST(request: Request) {
       (toolCall) => normalizeToolCallName(toolCall.name) === "end_session"
     ) || END_SESSION_TOOL_CALL_PATTERN.test(text);
 
-  let cleanText = toolEnvelope.displayText || text;
+  let cleanText =
+    toolEnvelope.toolCalls.length > 0
+      ? toolEnvelope.displayText
+      : toolEnvelope.displayText || text;
+  cleanText = sanitizeAssistantDisplayText(cleanText);
   if (hasEndSessionTool && !/hopefully you found this of use/i.test(cleanText)) {
     cleanText = cleanText ? `${cleanText}\n\n${END_SESSION_CLOSING_TEXT}`.trim() : END_SESSION_CLOSING_TEXT;
   }

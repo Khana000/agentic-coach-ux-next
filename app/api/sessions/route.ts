@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import clientPromise from "../../../lib/mongodb";
+import getMongoClient from "../../../lib/mongodb";
 
 const COLLECTION = "sessions";
 const DB_NAME = process.env.MONGO_DB_NAME ?? "coaching";
@@ -67,7 +67,7 @@ export async function GET(request: Request) {
     const limitParam = Number(searchParams.get("limit") ?? 20);
     const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 100) : 20;
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const db = client.db(DB_NAME);
     const sessions = await db
       .collection(COLLECTION)
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
   };
 
   try {
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const db = client.db(DB_NAME);
     const result = await db.collection(COLLECTION).insertOne(session);
 

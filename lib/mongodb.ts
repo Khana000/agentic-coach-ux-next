@@ -1,17 +1,7 @@
 import { MongoClient, ServerApiVersion } from "mongodb";
 
-const rawUri = process.env.MONGO_DB_CONNECTION_STRING ?? "";
-const uri = rawUri
-  .trim()
-  .replace(/^['"]|['"]$/g, "")
-  .replace(/\\n/g, "")
-  .trim();
-
-if (!uri) {
-  throw new Error("Missing MONGO_DB_CONNECTION_STRING in environment.");
-}
-
 type GlobalWithMongo = typeof globalThis & {
+  _mongoClient?: MongoClient;
   _mongoClientPromise?: Promise<MongoClient>;
 };
 
@@ -27,9 +17,38 @@ const options = {
   serverSelectionTimeoutMS: 10000,
 };
 
-if (!globalForMongo._mongoClientPromise) {
-  const client = new MongoClient(uri, options);
-  globalForMongo._mongoClientPromise = client.connect();
-}
+const resolveMongoUri = () =>
+  (process.env.MONGO_DB_CONNECTION_STRING ?? "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\\n/g, "")
+    .trim();
 
-export default globalForMongo._mongoClientPromise;
+const createClientPromise = () => {
+  const uri = resolveMongoUri();
+  if (!uri) {
+    throw new Error("Missing MONGO_DB_CONNECTION_STRING in environment.");
+  }
+  const client = new MongoClient(uri, options);
+  return client.connect().then((connectedClient) => {
+    globalForMongo._mongoClient = connectedClient;
+    return connectedClient;
+  });
+};
+
+const getMongoClient = async () => {
+  if (globalForMongo._mongoClient) {
+    return globalForMongo._mongoClient;
+  }
+
+  if (!globalForMongo._mongoClientPromise) {
+    globalForMongo._mongoClientPromise = createClientPromise().catch((error) => {
+      globalForMongo._mongoClientPromise = undefined;
+      throw error;
+    });
+  }
+
+  return globalForMongo._mongoClientPromise;
+};
+
+export default getMongoClient;

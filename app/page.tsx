@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import Image from "next/image";
 import { useConversation } from "@elevenlabs/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,6 +17,7 @@ type CoachGender = "male" | "female";
 type ChatRole = "assistant" | "user";
 type CoachingStartMode = "text" | "voice";
 type VoiceChannelStatus = "disconnected" | "connecting" | "connected";
+type CalendarAgreement = "pending" | "agreed" | "skip";
 
 type ChatMessage = {
   role: ChatRole;
@@ -52,6 +54,8 @@ type ReminderItem = {
 const BETA_PASSWORD = "12345";
 const MAX_BETA_USERS = 8;
 const MAX_TRIAL_SESSIONS = 1;
+const SHARED_TEST_MAX_TRIAL_SESSIONS = 2;
+const SHARED_TEST_QUERY_KEYS = ["test", "sharedTest", "shared_test"] as const;
 const REQUIRE_BETA_LOGIN = process.env.NEXT_PUBLIC_REQUIRE_BETA_LOGIN === "true";
 const TRIAL_STATE_STORAGE_KEY_PREFIX = "agenticCoach.trialState.v7";
 const TRIAL_STATE_STORAGE_KEY_ROOT = "agenticCoach.trialState.";
@@ -68,6 +72,8 @@ const VOICE_CONNECT_POLL_MS = 100;
 const VOICE_LAST_ATTEMPT_STORAGE_KEY = "agenticCoach.voice.lastAttempt.v1";
 const ENABLE_WEBSOCKET_VOICE_FALLBACK =
   process.env.NEXT_PUBLIC_VOICE_ENABLE_WEBSOCKET_FALLBACK !== "false";
+const VOICE_CONTEXT_GUARDRAIL =
+  "Never verbalize internal automation/tool details. Do not speak words like calling tool, payload, connector, debug, or internal steps. Speak only natural coaching responses.";
 const TEST_TRIAL_STATUS: TrialStatus = {
   sessionsLimit: 999,
   sessionsUsed: 0,
@@ -82,9 +88,15 @@ const PLAN_INTENT_PATTERN =
   /\b(create|build|make|generate|draft|prepare|show|give)\b[\s\w]{0,40}\b(coaching plan|action plan|development plan|plan)\b|\b(action plan|development plan|coaching plan)\b/i;
 const PLAN_NEGATIVE_PATTERN = /\b(don't|do not|not now|no plan|without plan)\b/i;
 const PLAN_OUTPUT_PATTERN = /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
+const PLAN_TRANSFER_SIGNAL_PATTERN =
+  /\b(action plan|focus plan|owner\s*:|deadline\s*:|success signal\s*:|action\s*\d+\s*[:\-]|(?:one|two|three|four|five)\.)\b/i;
 const PLAN_APPROVAL_PATTERN =
-  /\b(i agree|agreed|approve|approved|yes|yep|sounds good|looks good|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine)\b/i;
-const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|no)\b/i;
+  /\b(i agree|agreed|approve|approved|yes|yeah|yep|ok|okay|sounds good|sounds fine|looks good|looks fine|go ahead|proceed|let'?s do it|finali[sz]e|confirm|works for me|good plan|all good|happy with (it|that|the plan)|i'?m happy|i am happy|fine with (it|that|the plan)|i'?m fine|i am fine|that'?s fine|thats fine)\b/i;
+const PLAN_REJECTION_PATTERN = /\b(don't agree|do not agree|not now|decline|reject|nope|no)\b/i;
+const END_SESSION_PROMPT_PATTERN = /\bwould you like to end (the )?coaching session now\??\b/i;
+const END_SESSION_APPROVAL_PATTERN =
+  /\b(yes|yeah|yep|ok|okay|sure|please|go ahead|do it|end it|end session|stop|close|finish)\b/i;
+const END_SESSION_REJECTION_PATTERN = /\b(no|not now|later|continue|keep going)\b/i;
 
 const COACH_ENDING_MESSAGE =
   "Hopefully you found this of use, look forward to our next session, thanks";
@@ -132,8 +144,18 @@ const resolveAllowedBetaUsername = (raw: string) => {
   return `Beta${index}`;
 };
 
+const isSharedTestMode = () => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const params = new URLSearchParams(window.location.search);
+  return SHARED_TEST_QUERY_KEYS.some((key) => params.has(key));
+};
+
+const getMaxTrialSessions = () => (isSharedTestMode() ? SHARED_TEST_MAX_TRIAL_SESSIONS : MAX_TRIAL_SESSIONS);
+
 const normalizeTrialStatus = (raw?: Partial<TrialStatus> | null): TrialStatus => {
-  const sessionsLimit = MAX_TRIAL_SESSIONS;
+  const sessionsLimit = getMaxTrialSessions();
   const sessionsUsed = Math.max(0, Math.min(sessionsLimit, Number(raw?.sessionsUsed ?? 0)));
   const sessionsRemaining = Math.max(0, sessionsLimit - sessionsUsed);
 
@@ -149,10 +171,11 @@ const normalizeTrialStatus = (raw?: Partial<TrialStatus> | null): TrialStatus =>
 };
 
 const getTrialStorageKey = (betaUsername?: string | null) => {
+  const modeSuffix = isSharedTestMode() ? ":shared-test" : ":standard";
   const resolved = resolveAllowedBetaUsername(betaUsername ?? "");
   return resolved
-    ? `${TRIAL_STATE_STORAGE_KEY_PREFIX}:${resolved.toLowerCase()}`
-    : `${TRIAL_STATE_STORAGE_KEY_PREFIX}:guest`;
+    ? `${TRIAL_STATE_STORAGE_KEY_PREFIX}${modeSuffix}:${resolved.toLowerCase()}`
+    : `${TRIAL_STATE_STORAGE_KEY_PREFIX}${modeSuffix}:guest`;
 };
 
 const normalizeToolCallName = (name: string) =>
@@ -217,6 +240,18 @@ const stripToolCallArtifacts = (text: string) =>
   text
     .replace(/(?:\(\s*)?calling tool\b[\s\S]*?(?:\n{2,}|$)/gi, "\n")
     .replace(/^\s*calling tool\b.*$/gim, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+const INTERNAL_ASSISTANT_ARTIFACT_LINE_PATTERN =
+  /^\s*(?:\(\s*)?(?:calling\s*tool|tool\s*call|tool:|debug:)\b.*$/gim;
+const INTERNAL_ASSISTANT_JARGON_LINE_PATTERN =
+  /^\s*.*\b(payload|connector(?:s)?)\b.*$/gim;
+
+const sanitizeAssistantDisplayText = (text: string) =>
+  text
+    .replace(INTERNAL_ASSISTANT_ARTIFACT_LINE_PATTERN, "")
+    .replace(INTERNAL_ASSISTANT_JARGON_LINE_PATTERN, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
@@ -295,6 +330,22 @@ const extractAssistantToolCalls = (rawText: string) => {
 
   return { displayText, toolCalls };
 };
+
+const resolveAssistantDisplayText = (
+  rawText: string,
+  toolEnvelope: { displayText: string; toolCalls: AssistantToolCall[] }
+) => {
+  const baseText =
+    toolEnvelope.toolCalls.length > 0
+      ? toolEnvelope.displayText
+      : toolEnvelope.displayText || rawText;
+  return sanitizeAssistantDisplayText(baseText);
+};
+
+const isAutomationArtifactMessage = (text: string) =>
+  /\b(calling tool|tool call|with payload|payload\s*[:{]|connector(?:s)?\s*[:{]|save_action_plan|end_session|debug)\b/i.test(
+    text
+  );
 
 const coerceAssistantToolCall = (value: unknown): AssistantToolCall | null => {
   if (!value || typeof value !== "object") {
@@ -425,6 +476,91 @@ const extractActionItemsFromText = (text: string) => {
   return result;
 };
 
+const sanitizeNarrativeActionCandidate = (value: string) =>
+  value
+    .replace(/\bowner\s*:\s*[\s\S]*$/i, "")
+    .replace(/\bdeadline\s*:\s*[\s\S]*$/i, "")
+    .replace(/\bsuccess signal\s*:\s*[\s\S]*$/i, "")
+    .replace(/^[:;,\-\s]+/, "")
+    .replace(/\s+/g, " ")
+    .replace(/[;,\.\s]+$/, "")
+    .trim();
+
+const isLikelyNarrativeAction = (value: string) => {
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length < 4 || words.length > 40) {
+    return false;
+  }
+
+  if (
+    /\b(action hub|coachee email|calendar fields|does this action plan work|would you like|if you are happy|if you're happy)\b/i.test(
+      value
+    )
+  ) {
+    return false;
+  }
+
+  if (/^#{1,6}\s*/.test(value) || /\b(reflection|focus plan|first step)\b/i.test(value)) {
+    return false;
+  }
+
+  return /\b(define|rehearse|deliver|schedule|create|draft|prepare|practice|review|track|share|set|block|ask|send|complete|follow up|align|meet)\b/i.test(
+    value
+  );
+};
+
+const extractActionItemsFromPlanNarrative = (text: string) => {
+  const compact = text.replace(/\r/g, " ").replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return [];
+  }
+
+  const results: string[] = [];
+  const pushCandidate = (raw: string) => {
+    const cleaned = sanitizeNarrativeActionCandidate(raw);
+    if (!cleaned || !isLikelyNarrativeAction(cleaned)) {
+      return;
+    }
+    if (results.some((existing) => existing.toLowerCase() === cleaned.toLowerCase())) {
+      return;
+    }
+    results.push(cleaned);
+  };
+
+  const numberedPattern = /(?:^|\s)(?:[1-9]\d*)[.)]\s*(.*?)(?=(?:\s(?:[1-9]\d*)[.)]\s)|$)/g;
+  let numberedMatch = numberedPattern.exec(compact);
+  while (numberedMatch) {
+    pushCandidate(String(numberedMatch[1] ?? ""));
+    numberedMatch = numberedPattern.exec(compact);
+  }
+
+  const ordinalPattern =
+    /\b(first|second|third)\b\s*(?:action|step)?\s*[:\-]?\s*(.*?)(?=(?:\b(?:first|second|third)\b\s*(?:action|step)?\s*[:\-]?)|$)/gi;
+  let ordinalMatch = ordinalPattern.exec(compact);
+  while (ordinalMatch) {
+    pushCandidate(String(ordinalMatch[2] ?? ""));
+    ordinalMatch = ordinalPattern.exec(compact);
+  }
+
+  const wordNumberPattern =
+    /(?:^|\s)(one|two|three|four|five)\.\s*(.*?)(?=(?:\s(?:one|two|three|four|five)\.\s)|$)/gi;
+  let wordNumberMatch = wordNumberPattern.exec(compact);
+  while (wordNumberMatch) {
+    pushCandidate(String(wordNumberMatch[2] ?? ""));
+    wordNumberMatch = wordNumberPattern.exec(compact);
+  }
+
+  const stepPattern =
+    /\b(?:action|step)\s*(?:\d+|one|two|three|first|second|third)?\s*[:\-]\s*(.*?)(?=(?:\b(?:action|step)\s*(?:\d+|one|two|three|first|second|third)?\s*[:\-])|$)/gi;
+  let stepMatch = stepPattern.exec(compact);
+  while (stepMatch) {
+    pushCandidate(String(stepMatch[1] ?? ""));
+    stepMatch = stepPattern.exec(compact);
+  }
+
+  return results;
+};
+
 const normalizeActionItems = (items: string[]) => {
   const result: string[] = [];
 
@@ -443,6 +579,55 @@ const normalizeActionItems = (items: string[]) => {
   }
 
   return result;
+};
+
+const parseActionDueDateInput = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const month = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+    const localDate = new Date(year, month - 1, day, 9, 0, 0, 0);
+    return Number.isNaN(localDate.getTime()) ? null : localDate;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const isPlanApprovedMessage = (text: string) => PLAN_APPROVAL_PATTERN.test(text.trim());
+
+const isPlanRejectedMessage = (text: string) => {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (isPlanApprovedMessage(normalized)) {
+    return false;
+  }
+
+  if (/^(no|nah|nope)\b/.test(normalized)) {
+    return true;
+  }
+
+  return /\b(don't agree|do not agree|not now|decline|reject|skip it|leave it)\b/i.test(normalized);
+};
+
+const hasPlanTransferSignal = (text: string, itemCount: number) =>
+  PLAN_OUTPUT_PATTERN.test(text) || /does this action plan work for you\??/i.test(text) || itemCount >= 1 && PLAN_TRANSFER_SIGNAL_PATTERN.test(text);
+
+const isEndSessionApprovedMessage = (text: string) => {
+  const normalized = text.trim();
+  if (!normalized || END_SESSION_REJECTION_PATTERN.test(normalized)) {
+    return false;
+  }
+  return END_SESSION_APPROVAL_PATTERN.test(normalized);
 };
 
 const buildActionPlanSignature = (items: string[]) =>
@@ -505,10 +690,14 @@ export default function HomePage() {
   const [executionToolsEnabled, setExecutionToolsEnabled] = useState(false);
   const [actionHubItems, setActionHubItems] = useState<string[]>([]);
   const [deliveryEmail, setDeliveryEmail] = useState("");
+  const [coacheeReminderEmail, setCoacheeReminderEmail] = useState("");
   const [deliveryName, setDeliveryName] = useState("");
   const [calendarAction, setCalendarAction] = useState("");
   const [calendarStartLocal, setCalendarStartLocal] = useState("");
   const [actionDueDates, setActionDueDates] = useState<Record<string, string>>({});
+  const [actionCalendarAgreements, setActionCalendarAgreements] = useState<
+    Record<string, CalendarAgreement>
+  >({});
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     "unsupported"
@@ -529,6 +718,7 @@ export default function HomePage() {
   const voiceBootingRef = useRef(false);
   const voiceAutoConnectAttemptedRef = useRef(false);
   const voiceChannelStatusRef = useRef<VoiceChannelStatus>(voiceChannelStatus);
+  const awaitingEndSessionApprovalRef = useRef(false);
 
   const selectedCoach = coachProfiles[coachGender];
 
@@ -550,6 +740,15 @@ export default function HomePage() {
       extractActionItemsFromText(message.content).forEach((item) => {
         collected.push(item);
       });
+
+      const hasPlanSignal =
+        PLAN_OUTPUT_PATTERN.test(message.content) ||
+        /does this action plan work for you\??/i.test(message.content);
+      if (hasPlanSignal) {
+        extractActionItemsFromPlanNarrative(message.content).forEach((item) => {
+          collected.push(item);
+        });
+      }
     });
 
     return normalizeActionItems(collected);
@@ -568,7 +767,11 @@ export default function HomePage() {
     pendingPlanAssistantIndexRef.current = -1;
   };
 
-  const finalizeActionPlan = (rawItems: string[], signatureHint?: string) => {
+  const finalizeActionPlan = (
+    rawItems: string[],
+    signatureHint?: string,
+    options?: { autoImported?: boolean }
+  ) => {
     const normalized = normalizeActionItems(rawItems);
     if (normalized.length === 0) {
       return false;
@@ -584,7 +787,9 @@ export default function HomePage() {
     setExecutionToolsEnabled(true);
     setActionHubItems(normalized);
     setStatusMessage(
-      "Action plan finalised and moved to Action Hub. Add the coachee email and set reminder date/time per action."
+      options?.autoImported
+        ? "Action plan imported automatically to Action Hub. Add the coachee email and set due date per action."
+        : "Action plan finalised and moved to Action Hub. Add the coachee email and set due date per action."
     );
     return true;
   };
@@ -680,14 +885,68 @@ export default function HomePage() {
       const isAssistant = payload?.role === "agent";
       if (isAssistant) {
         const toolEnvelope = extractAssistantToolCalls(rawMessage);
-        const assistantText = (toolEnvelope.displayText || rawMessage).trim();
+        const assistantText = resolveAssistantDisplayText(rawMessage, toolEnvelope);
+        const artifactOnly = isAutomationArtifactMessage(rawMessage) && !assistantText;
+
+        if (artifactOnly) {
+          try {
+            elevenConversation.sendUserActivity();
+          } catch {
+            // no-op
+          }
+        }
+
         if (assistantText) {
           appendLiveMessage("assistant", assistantText);
+          if (END_SESSION_PROMPT_PATTERN.test(assistantText)) {
+            awaitingEndSessionApprovalRef.current = true;
+          } else if (/hopefully you found this of use/i.test(assistantText)) {
+            awaitingEndSessionApprovalRef.current = false;
+            if (sessionActiveRef.current) {
+              endTextSession(resolveCoachEndingMessage(assistantText));
+            }
+            return;
+          }
         }
         if (toolEnvelope.toolCalls.length > 0) {
           void handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText || rawMessage);
         }
         return;
+      }
+
+      if (awaitingEndSessionApprovalRef.current) {
+        if (isEndSessionApprovedMessage(rawMessage)) {
+          awaitingEndSessionApprovalRef.current = false;
+          appendLiveMessage("user", rawMessage);
+          endTextSession(COACH_ENDING_MESSAGE);
+          return;
+        }
+        if (END_SESSION_REJECTION_PATTERN.test(rawMessage)) {
+          awaitingEndSessionApprovalRef.current = false;
+        }
+      }
+
+      if (PLAN_INTENT_PATTERN.test(rawMessage) && !PLAN_NEGATIVE_PATTERN.test(rawMessage)) {
+        setExecutionToolsEnabled(true);
+      }
+
+      if (pendingPlanSignatureRef.current && pendingPlanItemsRef.current.length > 0) {
+        const normalizedMessage = rawMessage.trim();
+        if (isPlanRejectedMessage(normalizedMessage)) {
+          clearPendingActionPlan();
+        } else if (isPlanApprovedMessage(normalizedMessage)) {
+          appendLiveMessage("user", rawMessage);
+          if (
+            finalizeActionPlan(
+              pendingPlanItemsRef.current,
+              pendingPlanSignatureRef.current,
+              { autoImported: true }
+            )
+          ) {
+            setErrorMessage("");
+          }
+          return;
+        }
       }
 
       appendLiveMessage("user", rawMessage);
@@ -726,6 +985,8 @@ export default function HomePage() {
 
     voiceAutoConnectAttemptedRef.current = true;
     void startVoiceSession();
+  // startVoiceSession is intentionally excluded to avoid re-running auto-connect on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionActive, coachingStartMode, voiceChannelStatus, coachGender]);
 
   useEffect(() => {
@@ -868,11 +1129,29 @@ export default function HomePage() {
       return;
     }
 
-    const planItemsFromMessage = extractActionItemsFromText(lastMessage.content);
-    const hasPlanSignal =
-      PLAN_OUTPUT_PATTERN.test(lastMessage.content) ||
-      /does this action plan work for you\??/i.test(lastMessage.content);
-    if (!hasPlanSignal || planItemsFromMessage.length === 0) {
+    const recentAssistantWindow = [...chatMessages]
+      .reverse()
+      .filter((message) => message.role === "assistant")
+      .slice(0, 4)
+      .reverse()
+      .map((message) => message.content)
+      .join("\n\n");
+
+    const planItemsFromMessage = normalizeActionItems([
+      ...extractActionItemsFromText(recentAssistantWindow),
+      ...extractActionItemsFromPlanNarrative(recentAssistantWindow),
+      ...extractPlanItemsFromToolRaw(recentAssistantWindow).map((item) => item.action)
+    ]);
+    const hasPlanSignal = hasPlanTransferSignal(recentAssistantWindow, planItemsFromMessage.length);
+    const hasPlanStructureSignal =
+      /(?:^|\s)(?:\d+[.)]|first\b|second\b|third\b|action\s*\d*[:\-]|step\s*\d*[:\-]|focus plan|first step)/im.test(
+        recentAssistantWindow
+      );
+    const minimumPlanItemCount = executionToolsEnabled ? 1 : 3;
+    const hasLikelyPlanContent =
+      planItemsFromMessage.length >= minimumPlanItemCount &&
+      (executionToolsEnabled || hasPlanStructureSignal);
+    if ((!hasPlanSignal && !hasLikelyPlanContent) || planItemsFromMessage.length === 0) {
       return;
     }
 
@@ -890,9 +1169,26 @@ export default function HomePage() {
     pendingPlanItemsRef.current = planItemsFromMessage;
     pendingPlanAssistantIndexRef.current = chatMessages.length - 1;
     setExecutionToolsEnabled(true);
+
+    const latestUserMessage =
+      [...chatMessages]
+        .reverse()
+        .find((message) => message.role === "user")?.content ?? "";
+    const alreadyAgreed = Boolean(latestUserMessage) && isPlanApprovedMessage(latestUserMessage);
+
+    if (alreadyAgreed) {
+      if (finalizeActionPlan(planItemsFromMessage, signature, { autoImported: true })) {
+        setErrorMessage("");
+      }
+      return;
+    }
+
     setStatusMessage(
-      "Action plan created. Once the coachee says yes/happy/fine, it will move to Action Hub."
+      "Action plan ready. If the coachee says yes/okay/fine, it will transfer automatically to Action Hub."
     );
+    setErrorMessage("");
+  // finalizeActionPlan and executionToolsEnabled are intentionally excluded to prevent transfer-loop reprocessing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages]);
 
   useEffect(() => {
@@ -905,12 +1201,12 @@ export default function HomePage() {
       return;
     }
 
-    if (chatMessages.length - 1 <= pendingPlanAssistantIndexRef.current) {
+    if (chatMessages.length - 1 < pendingPlanAssistantIndexRef.current) {
       return;
     }
 
     const text = lastMessage.content.trim();
-    if (!text || PLAN_REJECTION_PATTERN.test(text) || !PLAN_APPROVAL_PATTERN.test(text)) {
+    if (!text || isPlanRejectedMessage(text) || !isPlanApprovedMessage(text)) {
       return;
     }
 
@@ -919,6 +1215,8 @@ export default function HomePage() {
     }
 
     finalizeActionPlan(pendingPlanItemsRef.current, pendingPlanSignatureRef.current);
+  // finalizeActionPlan is intentionally excluded to avoid duplicate finalize attempts on callback identity changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages]);
 
   useEffect(() => {
@@ -928,7 +1226,7 @@ export default function HomePage() {
     }
 
     const text = lastMessage.content.trim();
-    if (!text || PLAN_REJECTION_PATTERN.test(text) || !PLAN_APPROVAL_PATTERN.test(text)) {
+    if (!text || isPlanRejectedMessage(text) || !isPlanApprovedMessage(text)) {
       return;
     }
 
@@ -936,25 +1234,28 @@ export default function HomePage() {
       return;
     }
 
-    const previousAssistant = [...chatMessages]
+    const recentAssistantWindow = [...chatMessages]
       .slice(0, -1)
       .reverse()
-      .find((message) => message.role === "assistant");
-    if (!previousAssistant) {
-      return;
-    }
-
-    const hasPlanSignal =
-      PLAN_OUTPUT_PATTERN.test(previousAssistant.content) ||
-      /does this action plan work for you\??/i.test(previousAssistant.content);
-    if (!hasPlanSignal) {
+      .filter((message) => message.role === "assistant")
+      .slice(0, 6)
+      .reverse()
+      .map((message) => message.content)
+      .join("\n\n");
+    if (!recentAssistantWindow.trim()) {
       return;
     }
 
     const planItems = normalizeActionItems([
-      ...extractActionItemsFromText(previousAssistant.content),
-      ...extractPlanItemsFromToolRaw(previousAssistant.content).map((item) => item.action)
+      ...extractActionItemsFromText(recentAssistantWindow),
+      ...extractActionItemsFromPlanNarrative(recentAssistantWindow),
+      ...extractPlanItemsFromToolRaw(recentAssistantWindow).map((item) => item.action)
     ]);
+    const hasPlanSignal = hasPlanTransferSignal(recentAssistantWindow, planItems.length);
+    const canAutoImportFromExecutionMode = executionToolsEnabled && planItems.length > 0;
+    if (!hasPlanSignal && !canAutoImportFromExecutionMode) {
+      return;
+    }
     if (planItems.length === 0) {
       return;
     }
@@ -965,12 +1266,15 @@ export default function HomePage() {
     }
 
     finalizeActionPlan(planItems, signature);
+  // finalizeActionPlan is intentionally excluded to avoid duplicate finalize attempts on callback identity changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages]);
 
   useEffect(() => {
     if (actionHubItems.length === 0) {
       setCalendarAction("");
       setActionDueDates({});
+      setActionCalendarAgreements({});
       return;
     }
 
@@ -981,6 +1285,13 @@ export default function HomePage() {
       const next: Record<string, string> = {};
       actionHubItems.forEach((item) => {
         next[item] = previous[item] ?? "";
+      });
+      return next;
+    });
+    setActionCalendarAgreements((previous) => {
+      const next: Record<string, CalendarAgreement> = {};
+      actionHubItems.forEach((item) => {
+        next[item] = previous[item] ?? "pending";
       });
       return next;
     });
@@ -1195,6 +1506,11 @@ export default function HomePage() {
           if (typeof window !== "undefined") {
             window.localStorage.setItem(VOICE_LAST_ATTEMPT_STORAGE_KEY, attempt.label);
           }
+          try {
+            elevenConversation.sendContextualUpdate(VOICE_CONTEXT_GUARDRAIL);
+          } catch {
+            // no-op
+          }
           setErrorMessage("");
           setStatusMessage("Voice channel connected. Two-way conversation is live.");
           return true;
@@ -1226,11 +1542,41 @@ export default function HomePage() {
 
   const startTextSession = () => {
     if (!REQUIRE_BETA_LOGIN) {
+      const sharedTestMode = isSharedTestMode();
+      const trialUser = "TestUser";
+
       if (sessionActiveRef.current) {
         setSessionActive(true);
         setStatusMessage("Coaching session active.");
         setErrorMessage("");
         return true;
+      }
+
+      if (sharedTestMode) {
+        const current = trialStatus ?? getStoredTrialStatus(trialUser);
+
+        if (current.activeSessionId) {
+          sessionActiveRef.current = true;
+          setSessionActive(true);
+          setStatusMessage("Coaching session active.");
+          setErrorMessage("");
+          return true;
+        }
+
+        if (current.sessionsRemaining <= 0) {
+          setErrorMessage("Test limit reached: no coaching sessions remaining.");
+          return false;
+        }
+
+        saveTrialStatus(
+          {
+            ...current,
+            sessionsUsed: current.sessionsUsed + 1,
+            sessionsRemaining: current.sessionsRemaining - 1,
+            activeSessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          },
+          trialUser
+        );
       }
 
       sessionActiveRef.current = true;
@@ -1243,7 +1589,9 @@ export default function HomePage() {
       setActionDueDates({});
       appliedPlanSignatureRef.current = "";
       clearPendingActionPlan();
-      setTrialStatus(TEST_TRIAL_STATUS);
+      if (!sharedTestMode) {
+        setTrialStatus(TEST_TRIAL_STATUS);
+      }
       setStatusMessage("Coaching session started.");
       setErrorMessage("");
       return true;
@@ -1306,6 +1654,17 @@ export default function HomePage() {
 
   const endTextSession = (reason?: string) => {
     if (!REQUIRE_BETA_LOGIN) {
+      if (isSharedTestMode()) {
+        const trialUser = "TestUser";
+        const current = trialStatus ?? getStoredTrialStatus(trialUser);
+        saveTrialStatus(
+          {
+            ...current,
+            activeSessionId: null
+          },
+          trialUser
+        );
+      }
       sessionActiveRef.current = false;
       setSessionActive(false);
       if (coachingStartModeRef.current === "voice" || voiceChannelStatus !== "disconnected") {
@@ -1342,11 +1701,20 @@ export default function HomePage() {
 
     if (!REQUIRE_BETA_LOGIN) {
       setAuthenticatedBetaUsername("TestUser");
-      setTrialStatus(TEST_TRIAL_STATUS);
+      if (isSharedTestMode()) {
+        const trial = getStoredTrialStatus("TestUser");
+        saveTrialStatus(trial, "TestUser");
+      } else {
+        setTrialStatus(TEST_TRIAL_STATUS);
+      }
       setScreen("session");
       sessionActiveRef.current = false;
       setSessionActive(false);
-      setStatusMessage("Test mode active. Login is disabled.");
+      setStatusMessage(
+        isSharedTestMode()
+          ? "Shared test mode active. 2 coaching attempts per browser."
+          : "Test mode active. Login is disabled."
+      );
       return;
     }
 
@@ -1391,11 +1759,20 @@ export default function HomePage() {
 
     if (!REQUIRE_BETA_LOGIN) {
       setAuthenticatedBetaUsername("TestUser");
-      setTrialStatus(TEST_TRIAL_STATUS);
+      if (isSharedTestMode()) {
+        const trial = getStoredTrialStatus("TestUser");
+        saveTrialStatus(trial, "TestUser");
+      } else {
+        setTrialStatus(TEST_TRIAL_STATUS);
+      }
       setScreen("session");
       sessionActiveRef.current = false;
       setSessionActive(false);
-      setStatusMessage("Test mode active. Login is disabled.");
+      setStatusMessage(
+        isSharedTestMode()
+          ? "Shared test mode active. 2 coaching attempts per browser."
+          : "Test mode active. Login is disabled."
+      );
       setErrorMessage("");
       setAuthError("");
       return;
@@ -1491,8 +1868,8 @@ export default function HomePage() {
   const resolveActionStartDate = (actionText: string, fallbackIndex = 0) => {
     const actionSpecificDate = actionDueDates[actionText]?.trim() ?? "";
     if (actionSpecificDate) {
-      const explicit = new Date(actionSpecificDate);
-      if (!Number.isNaN(explicit.getTime())) {
+      const explicit = parseActionDueDateInput(actionSpecificDate);
+      if (explicit) {
         return explicit;
       }
     }
@@ -1507,6 +1884,9 @@ export default function HomePage() {
 
     return new Date(baseStart.getTime() + fallbackIndex * 24 * 60 * 60 * 1000);
   };
+
+  const hasCalendarAgreement = (actionText: string) =>
+    (actionCalendarAgreements[actionText] ?? "pending") === "agreed";
 
   const postCalendarInvite = async (toEmail: string, actionText: string, start: Date) => {
     const end = new Date(start.getTime() + 30 * 60 * 1000);
@@ -1585,6 +1965,12 @@ export default function HomePage() {
       setErrorMessage("No action selected for calendar invite.");
       return;
     }
+
+    if (!hasCalendarAgreement(actionText)) {
+      setErrorMessage("Set Calendar agreement to 'Agreed for calendar' before sending this invite.");
+      return;
+    }
+
     const toEmail = deliveryEmail.trim();
     if (!EMAIL_PATTERN.test(toEmail)) {
       setErrorMessage("Enter a valid recipient email in Action Hub.");
@@ -1631,9 +2017,15 @@ export default function HomePage() {
 
     let sent = 0;
     const failedActions: string[] = [];
+    let skippedByAgreement = 0;
 
     for (let index = 0; index < actionHubItems.length; index += 1) {
       const actionText = actionHubItems[index];
+      if (!hasCalendarAgreement(actionText)) {
+        skippedByAgreement += 1;
+        continue;
+      }
+
       const start = resolveActionStartDate(actionText, index);
       if (!start) {
         failedActions.push(`${actionText} (invalid date)`);
@@ -1654,10 +2046,17 @@ export default function HomePage() {
       }
     }
 
+    const statusParts: string[] = [];
     if (sent > 0) {
-      setStatusMessage(
-        `Sent ${sent} calendar invite${sent === 1 ? "" : "s"} for action reminders.`
+      statusParts.push(`Sent ${sent} calendar invite${sent === 1 ? "" : "s"} for action reminders.`);
+    }
+    if (skippedByAgreement > 0) {
+      statusParts.push(
+        `Skipped ${skippedByAgreement} action${skippedByAgreement === 1 ? "" : "s"} not marked as agreed for calendar.`
       );
+    }
+    if (statusParts.length > 0) {
+      setStatusMessage(statusParts.join(" "));
     }
 
     if (failedActions.length > 0) {
@@ -1687,6 +2086,7 @@ export default function HomePage() {
     let emailSent = false;
     let sentInvites = 0;
     const failedActions: string[] = [];
+    let skippedByAgreement = 0;
 
     try {
       const emailResponse = await fetch("/api/action-plan-email", {
@@ -1717,6 +2117,11 @@ export default function HomePage() {
 
       for (let index = 0; index < actionHubItems.length; index += 1) {
         const actionText = actionHubItems[index];
+        if (!hasCalendarAgreement(actionText)) {
+          skippedByAgreement += 1;
+          continue;
+        }
+
         const start = resolveActionStartDate(actionText, index);
         if (!start) {
           failedActions.push(`${actionText} (invalid date)`);
@@ -1742,6 +2147,11 @@ export default function HomePage() {
       statusParts.push(
         `Calendar invites sent: ${sentInvites}/${actionHubItems.length}.`
       );
+      if (skippedByAgreement > 0) {
+        statusParts.push(
+          `Skipped ${skippedByAgreement} action${skippedByAgreement === 1 ? "" : "s"} not marked as agreed for calendar.`
+        );
+      }
       setStatusMessage(statusParts.join(" "));
 
       if (failedActions.length > 0) {
@@ -1795,15 +2205,10 @@ export default function HomePage() {
             [...chatMessagesRef.current]
               .reverse()
               .find((message) => message.role === "user")?.content ?? "";
-          const alreadyAgreed =
-            Boolean(latestUserMessage) &&
-            PLAN_APPROVAL_PATTERN.test(latestUserMessage) &&
-            !PLAN_REJECTION_PATTERN.test(latestUserMessage);
+          const alreadyAgreed = Boolean(latestUserMessage) && isPlanApprovedMessage(latestUserMessage);
 
-          if (alreadyAgreed) {
-            if (finalizeActionPlan(actionOnlyItems, signature)) {
-              savedPlanActions += actionOnlyItems.length;
-            }
+          if (alreadyAgreed && finalizeActionPlan(actionOnlyItems, signature, { autoImported: true })) {
+            savedPlanActions += actionOnlyItems.length;
           }
         }
       } else if (name === "end_session") {
@@ -1813,10 +2218,12 @@ export default function HomePage() {
 
     if (savedPlanActions > 0) {
       setStatusMessage(
-        `Action plan finalised and moved to Action Hub (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
+        `Action plan imported to Action Hub (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
       );
     } else if (dedupedCalls.some((toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan")) {
-      setStatusMessage("Tool call handled: save_action_plan (pending coachee agreement).");
+      setStatusMessage(
+        "Action plan ready. Awaiting coachee confirmation (yes/okay/fine) to transfer to Action Hub."
+      );
     }
 
     if (shouldEndSession && sessionActive) {
@@ -1861,6 +2268,11 @@ export default function HomePage() {
       const isLiveVoiceTurn = coachingStartMode === "voice" && voiceChannelStatus === "connected";
       if (isLiveVoiceTurn) {
         elevenConversation.sendUserMessage(trimmedInput);
+        try {
+          elevenConversation.sendUserActivity();
+        } catch {
+          // no-op
+        }
         setStatusMessage("Sent to voice coach.");
         return;
       }
@@ -1895,7 +2307,7 @@ export default function HomePage() {
 
       const assistantRaw = String(data?.text ?? "");
       const toolEnvelope = extractAssistantToolCalls(assistantRaw);
-      const assistantText = (toolEnvelope.displayText || assistantRaw).trim();
+      const assistantText = resolveAssistantDisplayText(assistantRaw, toolEnvelope);
       const responseToolCalls = extractAssistantToolCallsFromApi(data?.toolCalls);
       const mergedToolCalls = [...responseToolCalls, ...toolEnvelope.toolCalls];
 
@@ -1993,10 +2405,13 @@ export default function HomePage() {
                 </Button>
               </div>
               <div className="ec-hero-image-container">
-                <img
+                <Image
                   src="/cover-saudi-coaching.jpg"
                   alt="Saudi male and female in a coaching discussion"
                   className="ec-hero-image"
+                  width={1600}
+                  height={1067}
+                  priority
                 />
               </div>
             </section>
@@ -2047,7 +2462,12 @@ export default function HomePage() {
               <CardHeader>
                 <div className="coach-intro">
                   <div className={`coach-avatar ${sessionActive ? "active" : ""}`}>
-                    <img src={selectedCoach.avatarSrc} alt={selectedCoach.avatarAlt} />
+                    <Image
+                      src={selectedCoach.avatarSrc}
+                      alt={selectedCoach.avatarAlt}
+                      width={96}
+                      height={96}
+                    />
                   </div>
                   <div className="coach-meta">
                     <p className="coach-label">Your coach</p>
@@ -2254,8 +2674,8 @@ export default function HomePage() {
                   ) : actionHubItems.length === 0 ? (
                     <>
                       <p className="info">
-                        No finalised actions yet. Confirm the proposed action plan (for example: yes / happy with it)
-                        to move it here.
+                        No actions in Action Hub yet. Confirm the proposed plan (for example: yes / okay / fine)
+                        and it will transfer here automatically.
                       </p>
                       {transcriptActionItems.length > 0 ? (
                         <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
@@ -2280,16 +2700,29 @@ export default function HomePage() {
                           placeholder="name@company.com"
                         />
                       </div>
+                      <div className="field">
+                        <Label htmlFor="coachee-reminder-email">Coachee reminder email (future integration)</Label>
+                        <Input
+                          id="coachee-reminder-email"
+                          type="email"
+                          value={coacheeReminderEmail}
+                          onChange={(event) => setCoacheeReminderEmail(event.target.value)}
+                          placeholder="coachee@company.com"
+                        />
+                        <p className="info">
+                          Stored for reminder flow integration. No reminder email is sent from this field yet.
+                        </p>
+                      </div>
                       <div className="action-hub-list">
                         {actionHubItems.map((item, index) => (
                           <div key={item} className="action-hub-item">
                             <div>
                               <p className="action-hub-text">{item}</p>
                               <div className="field" style={{ marginTop: "0.5rem" }}>
-                                <Label htmlFor={`action-date-${index}`}>Reminder date/time</Label>
+                                <Label htmlFor={`action-date-${index}`}>Due date</Label>
                                 <Input
                                   id={`action-date-${index}`}
-                                  type="datetime-local"
+                                  type="date"
                                   value={actionDueDates[item] ?? ""}
                                   onChange={(event) =>
                                     setActionDueDates((previous) => ({
@@ -2298,6 +2731,23 @@ export default function HomePage() {
                                     }))
                                   }
                                 />
+                              </div>
+                              <div className="field" style={{ marginTop: "0.5rem" }}>
+                                <Label htmlFor={`action-calendar-agreement-${index}`}>Calendar agreement</Label>
+                                <Select
+                                  id={`action-calendar-agreement-${index}`}
+                                  value={actionCalendarAgreements[item] ?? "pending"}
+                                  onChange={(event) =>
+                                    setActionCalendarAgreements((previous) => ({
+                                      ...previous,
+                                      [item]: (event.target.value as CalendarAgreement) ?? "pending"
+                                    }))
+                                  }
+                                >
+                                  <option value="pending">Not agreed yet</option>
+                                  <option value="agreed">Agreed for calendar</option>
+                                  <option value="skip">Skip calendar</option>
+                                </Select>
                               </div>
                             </div>
                             <div className="action-hub-menu">
