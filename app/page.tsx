@@ -1841,7 +1841,7 @@ export default function HomePage() {
         `Action plan finalised and moved to Action Hub (${savedPlanActions} action${savedPlanActions === 1 ? "" : "s"}).`
       );
     } else if (dedupedCalls.some((toolCall) => normalizeToolCallName(toolCall.name) === "save_action_plan")) {
-      setStatusMessage("Tool call handled: save_action_plan (pending coachee agreement).");
+      setStatusMessage("Action plan captured. Confirm the plan to move it into Action Hub.");
     }
 
     if (shouldEndSession && sessionActive) {
