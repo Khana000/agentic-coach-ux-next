@@ -378,6 +378,19 @@ const extractPlanItemsFromToolRaw = (rawText: string): ToolPlanItem[] => {
   return normalizeActionItems(actions).map((action) => ({ action }));
 };
 
+const extractPlanActionsFromUnknown = (input: unknown): string[] => {
+  const fromPayload = extractPlanItemsFromToolPayload(input).map((item) => item.action);
+  if (fromPayload.length > 0) {
+    return normalizeActionItems(fromPayload);
+  }
+
+  if (typeof input === "string") {
+    return normalizeActionItems(extractPlanItemsFromToolRaw(input).map((item) => item.action));
+  }
+
+  return [];
+};
+
 const extractActionItemsFromText = (text: string) => {
   const bulletPattern = /^\s*([-*+]\s+|\d+[.)]\s+)(.+)$/;
   const actionLinePattern = /^\s*(action|step)\s*\d*\s*[:\-]\s+(.+)$/i;
@@ -633,6 +646,25 @@ export default function HomePage() {
       : process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID_MALE?.trim() || DEFAULT_ELEVENLABS_VOICE_ID_MALE;
 
   const elevenConversation = useConversation({
+    clientTools: {
+      save_action_plan: (parameters: unknown) => {
+        const actions = extractPlanActionsFromUnknown(parameters);
+        if (actions.length === 0) {
+          return "No valid actions found to save.";
+        }
+
+        const signature = buildActionPlanSignature(actions);
+        if (!signature) {
+          return "No valid actions found to save.";
+        }
+
+        if (signature !== appliedPlanSignatureRef.current) {
+          finalizeActionPlan(actions, signature);
+        }
+
+        return "Action plan saved to Action Hub.";
+      }
+    },
     onConnect: () => {
       setVoiceChannelStatus("connected");
       setErrorMessage("");
@@ -677,12 +709,12 @@ export default function HomePage() {
       const isAssistant = payload?.role === "agent";
       if (isAssistant) {
         const toolEnvelope = extractAssistantToolCalls(rawMessage);
-        const assistantText = (toolEnvelope.displayText || rawMessage).trim();
+        const assistantText = toolEnvelope.displayText.trim();
         if (assistantText) {
           appendLiveMessage("assistant", assistantText);
         }
         if (toolEnvelope.toolCalls.length > 0) {
-          void handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText || rawMessage);
+          void handleAssistantToolCalls(toolEnvelope.toolCalls, assistantText);
         }
         return;
       }
@@ -1888,7 +1920,7 @@ export default function HomePage() {
 
       const assistantRaw = String(data?.text ?? "");
       const toolEnvelope = extractAssistantToolCalls(assistantRaw);
-      const assistantText = (toolEnvelope.displayText || assistantRaw).trim();
+      const assistantText = toolEnvelope.displayText.trim();
       const responseToolCalls = extractAssistantToolCallsFromApi(data?.toolCalls);
       const mergedToolCalls = [...responseToolCalls, ...toolEnvelope.toolCalls];
 
@@ -1899,7 +1931,7 @@ export default function HomePage() {
       }
 
       if (mergedToolCalls.length > 0) {
-        await handleAssistantToolCalls(mergedToolCalls, assistantText || assistantRaw);
+        await handleAssistantToolCalls(mergedToolCalls, assistantText);
       }
 
       if (data?.endSession) {
