@@ -958,11 +958,29 @@ const hasStructuredPlanOutput = (text: string) => {
   return headingPattern.test(text) && bulletPattern.test(text);
 };
 
+const cleanEnvValue = (value?: string | null, fallback = "") => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const normalized = value
+    .replace(/\r?\n/g, "")
+    .replace(/\\n/g, "")
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .trim();
+
+  return normalized || fallback;
+};
+
 export async function POST(request: Request) {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
-  const antigravKey = process.env.ANTIGRAVITY_API_KEY;
-  const antigravEndpoint = process.env.ANTIGRAVITY_ENDPOINT ?? "https://api.antigravity.com/v1/chat";
+  const openaiKey = cleanEnvValue(process.env.OPENAI_API_KEY);
+  const model = cleanEnvValue(process.env.OPENAI_CHAT_MODEL, "gpt-4o-mini");
+  const antigravKey = cleanEnvValue(process.env.ANTIGRAVITY_API_KEY);
+  const antigravEndpoint = cleanEnvValue(
+    process.env.ANTIGRAVITY_ENDPOINT,
+    "https://api.antigravity.com/v1/chat"
+  );
 
   if (!openaiKey && !antigravKey) {
     return NextResponse.json({ error: "Missing OPENAI_API_KEY or ANTIGRAVITY_API_KEY." }, { status: 500 });
