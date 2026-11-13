@@ -1,0 +1,9 @@
+/* Fix #10: consistent, instantly visible 2px focus rings on coaching-screen controls.
+   .ui-button uses `transition: all`, which animated the outline in from 0px; exclude outline from that
+   transition and use a tighter offset so rings are not cut off inside scrolling cards. */
+.ui-button{transition-property:background-color,border-color,color,filter,opacity,box-shadow,transform}
+.ui-button:focus-visible,
+.session-actions summary:focus-visible,
+.app--session a:focus-visible{outline:2px solid #b5efda;outline-offset:2px}
+.ui-input:focus-visible,.ui-textarea:focus-visible,.ui-select:focus-visible{outline:2px solid #b5efda;outline-offset:1px}
+.session-actions summary{border-radius:8px;padding-inline:4px}
