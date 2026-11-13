@@ -15,6 +15,8 @@
 export type BoundaryKind = "risk" | "clinical";
 
 // Any sign of risk to life or self-harm. Always triggers, every time.
+// Patterns are matched against normalised text (see normaliseForBoundary): lower case,
+// straight apostrophes, contractions expanded ("can't" -> "cannot", "I'm" -> "i am", "wasn't" -> "was not").
 const RISK_PATTERNS: RegExp[] = [
   /\bsuicid(e|al)\b/i,
   /\b(kill|killing|hurt|hurting|harm|harming)\s+(myself|my\s*self)\b/i,
@@ -24,8 +26,57 @@ const RISK_PATTERNS: RegExp[] = [
   /\b(take|taking)\s+my\s+(own\s+)?life\b/i,
   /\b(don'?t|do\s+not|no\s+longer)\s+want\s+to\s+(be\s+alive|live|exist|be\s+here\s+anymore|wake\s+up)\b/i,
   /\b(no|any)\s+reason\s+to\s+(live|go\s+on|keep\s+going)\b/i,
-  /\bbetter\s+off\s+(dead|without\s+me)\b/i,
-  /\boverdos(e|ing)\b/i
+  /\bbetter\s+off\s+dead\b/i,
+  /\boverdos(e|ing)\b/i,
+  /\bunalive\b/i,
+  /\bhang(ing)?\s+myself\b/i,
+  /\bnoose\b/i,
+
+  // Indirect / passive suicidal ideation.
+  // "Everyone would be better off / fine without me", "...if I just disappeared / wasn't here".
+  /\b(better|fine|okay|ok|happier|easier|relieved)(\s+off)?\s+without\s+me\b(?!\s+(in|at|on|for|during|there|joining|attending|leading|running|in\s+the)\b)/,
+  /\b(better|fine|okay|ok|happier|easier|relieved|notice|care|miss\s+me)\b[^.!?]{0,40}\bif\s+i\s+(just\s+|simply\s+)?(disappeared|vanished|died|was\s+dead|were\s+dead|was\s+gone|were\s+gone|was\s+not\s+(here|around|alive)|were\s+not\s+(here|around|alive)|did\s+not\s+exist|was\s+not\s+in\s+the\s+picture)\b(?!\s+(from|for|on|at|during|in)\s+(the|this|a|our|my|next|that)\b)/,
+  /\b(no\s+one|nobody|no-one)\s+(would|will)\s+(even\s+)?(notice|care|miss\s+me)\b[^.!?]{0,30}\b(if|when)\s+i\s+(was|were|am)\s+(gone|dead|not\s+here|not\s+around)\b/,
+  // "I just want to disappear (forever)" - but not "disappear from this meeting / for a week / into the background".
+  /\b(want|wanted|wanting|wish|wishing)\s+(i\s+could\s+|to\s+)?(just\s+|simply\s+)?(disappear|vanish|stop\s+existing|not\s+exist)\b(?=\s*(forever|for\s+good|permanently|and\s+never\s+come\s+back|completely)?\s*($|[.!?,;]|and\b|but\b|because\b|so\b))/,
+  // Being a burden.
+  /\b(i\s+am|i\s+feel|i\s+feel\s+like|feel\s+like|i\s+have\s+become|i\s+have\s+always\s+been|i\s+am\s+just)\s+(i\s+am\s+)?(just\s+|only\s+|nothing\s+but\s+|such\s+)?(a\s+|an\s+)?(huge\s+|massive\s+|real\s+|total\s+|complete\s+|constant\s+)?(burden|waste\s+of\s+space)\b(?!\s+(is|has|was|being|off|lifted)\b)/,
+  /\b(i\s+am|being)\s+a\s+burden\s+(to|on|for)\s+(everyone|everybody|my\s+family|my\s+(wife|husband|partner|kids|children|parents|friends)|them|people|others|you\s+all)\b/,
+  // No point / no way out / can't go on.
+  /\b(no|any)\s+point\s+(in\s+|to\s+)?(living|being\s+alive|life|going\s+on|carrying\s+on|existing|anything|any\s+of\s+it|it\s+all|trying\s+anymore|me\s+being\s+here)\b/,
+  /\b(there\s+is\s+)?no\s+point\s+anymore\s*($|[.!?,;])/,
+  /\bwhat\s+is\s+the\s+point\s+(of|in)\s+(living|life|being\s+alive|going\s+on|carrying\s+on|existing|anything|any\s+of\s+it|it\s+all|me)\b/,
+  /\b(no|a|any)\s+way\s+out\b(?=\s*(of\s+(this|it|it\s+all|my\s+life|life|the\s+pain|this\s+pain|this\s+darkness|here))?\s*(anymore|any\s+more)?\s*($|[.!?,;]|and\b|but\b|except\b|other\s+than\b))/,
+  /\b(cannot|can\s+not|could\s+not|unable\s+to)\s+(go\s+on|carry\s+on|keep\s+going)\b(?=\s*(anymore|any\s+longer|any\s+more|living|with\s+life|like\s+this)?\s*($|[.!?,;]|and\b|but\b))/,
+  /\b(tired|sick|exhausted|weary)\s+of\s+(living|being\s+alive|existing)\b(?!\s+(out\s+of|in|with|on|under|like|at|as|through|from|paycheque|paycheck))/,
+  /\b(tired|sick|exhausted|weary|done)\s+(of|with)\s+(life|living|being\s+alive)\b(?=\s*(anymore|any\s+more|now)?\s*($|[.!?,;]|and\b|but\b))/,
+  /\b(cannot|can\s+not|could\s+not|unable\s+to)\s+(keep|go\s+on|carry\s+on)\s+(living|existing)\b/,
+  /\bwant\s+(it\s+all|everything|the\s+pain|my\s+life|life)\s+to\s+(stop|end)\b(?=\s*(now|forever|for\s+good)?\s*($|[.!?,;]|and\b|but\b))/,
+  /\b(everyone|everybody|they|people|my\s+family|my\s+(kids|children|wife|husband|partner)|the\s+world)\s+(would|will)\s+(all\s+)?be\s+(better\s+off|happier|fine)\s*(anyway)?\s*($|[.!?,;])/,
+  /\b(cannot|can\s+not|do\s+not)\s+see\s+(a|any)\s+future\b(?=\s*(for\s+(me|myself))?\s*(anymore|any\s+more)?\s*($|[.!?,;]|and\b|but\b))/,
+  /\b(i\s+have|there\s+is)\s+no\s+future\b(?=\s*(for\s+(me|myself))?\s*(anymore)?\s*($|[.!?,;]|and\b|but\b))/,
+  /\b(want|wanted|wish|wishing)\s+to\s+die\b(?!\s+(of|from|laughing))/,
+  /\bwish\s+i\s+(was|were)\s+(dead|never\s+born|not\s+alive|gone)\b/,
+  /\bwish\s+i\s+(had\s+)?never\s+(been\s+born|existed)\b/,
+  /\b(will|would|might|may)\s+not\s+be\s+(around|here|alive)\s+(much\s+longer|for\s+much\s+longer|anymore|any\s+more)\b(?![^.!?]*\b(job|role|company|team|resign|resigned|resigning|notice|leaving|contract|office|project|department|moving|redundan))/,
+  // Giving possessions away, saying goodbye, writing letters.
+  /\b(giving|given|give|gave)\s+(away\s+)?(all|most|some|lots|many|loads|a\s+lot)?\s*(of\s+)?my\s+(things|stuff|belongings|possessions|prized\s+possessions|valuables|treasured|precious)\b/,
+  /\b(goodbye|suicide)\s+(letters?|notes?)\b/,
+  /\b(letters?|notes?)\s+(to|for)\s+(my\s+|all\s+my\s+)?(family|kids|children|loved\s+ones|wife|husband|partner|parents|mum|mom|dad|friends|everyone)\b[^.!?]{0,40}\b(goodbye|when\s+i\s+am\s+gone|after\s+i\s+am\s+gone|for\s+after|in\s+case\s+(something|anything)\s+happens\s+to\s+me)\b/,
+  /\b(saying|said|say)\s+(my\s+)?goodbyes?\s+to\s+(everyone|everybody|my\s+family|the\s+people\s+i\s+love|my\s+(kids|children|loved\s+ones|friends|wife|husband|partner|parents)|the\s+world|life)\b(?![^.!?]*\b(leaving|farewell|last\s+day|new\s+job|team|colleagues|office|retire|retirement|party|drinks|handover|holiday|trip|move|moving|relocat))/,
+  /\b(said|saying)\s+my\s+(final\s+|last\s+)?goodbyes\b(?![^.!?]*\b(leaving|farewell|last\s+day|new\s+job|team|colleagues|office|retire|retirement|party|drinks|handover|holiday|trip|move|moving|relocat))/,
+  /\b(this\s+is|it\s+is)\s+(my\s+)?(final\s+|last\s+)?goodbye\b(?![^.!?]*\b(leaving|farewell|last\s+day|new\s+job|team|colleagues|office|retire|retirement|party|drinks|handover|role|company))/,
+  // Wanting to sleep and not wake up.
+  /\b(sleep|asleep|sleeping)\b[^.!?]{0,20}\b(not|never)\s+(wake|waking)\s+up\b(?!\s+(on\s+time|early|late|before|in\s+time|refreshed|rested|feeling))/,
+  /\b(wish|hope|hoping|wishing|pray|praying)\b[^.!?]{0,15}\b(i|to)\s+(would\s+|will\s+)?(not|never|did\s+not|do\s+not)\s+wake\s+up\b(?!\s+(on\s+time|early|late|before|in\s+time|refreshed|rested|feeling))/,
+  /\b(sleep|sleeping)\s+forever\b/,
+  // Having a plan or the means.
+  /\b(plan|planned|planning|plans|worked\s+out|figured\s+out|decided)\b[^.!?]{0,25}\b(to|how\s+to|how\s+i\s+would|how\s+i\s+will|when\s+to|when\s+i\s+will)\s+(end\s+it(\s+all)?|end\s+my\s+life|kill\s+myself|die|not\s+be\s+here|take\s+my\s+(own\s+)?life)\b(?!\s+(with|for|at|on|by)\s+(the|this|a|our|my)\s+(project|contract|deal|meeting|client|supplier|partner|team|vendor|agency))/,
+  /\b(stockpil\w*|sav(e|ed|ing)\s+up|collect(ed|ing)|hoard(ed|ing)|stash(ed|ing))\s+(my\s+|some\s+|all\s+|of\s+|the\s+)*(pills|tablets|meds|medication|painkillers|paracetamol|sleeping\s+pills)\b/,
+  /\b(pills|tablets|meds|medication|painkillers|paracetamol)\s+(are\s+)?(saved|ready|stockpiled|hidden|put\s+aside|lined\s+up)\b/,
+  /\b(have|got|bought|found)\s+(the\s+)?means\s+to\s+(end\s+it|end\s+my\s+life|kill\s+myself|die|take\s+my\s+(own\s+)?life)\b/,
+  /\b(jump|jumping|throw\s+myself|throwing\s+myself)\s+(off|from)\s+(a|the)\s+(bridge|building|roof|cliff|balcony|tower|car\s+park)\b/,
+  /\b(throw\s+myself|throwing\s+myself|step|stepping|jump|jumping|walk|walking)\s+in\s+front\s+of\s+(a|the)\s+(train|bus|car|lorry|truck|tube)\b/
 ];
 
 // Medical or mental-health needs that a coach should not handle (diagnosis, treatment, therapy).
@@ -46,11 +97,49 @@ const CLINICAL_PATTERNS: RegExp[] = [
 
 export const BOUNDARY_MARKER = "I'm not a medical or therapy service";
 
+/**
+ * Normalise a message before matching: lower case, straight quotes, collapsed spaces,
+ * and common contractions expanded so "can't", "cant" and "cannot" all match the same pattern.
+ */
+export const normaliseForBoundary = (text: string): string => {
+  let value = (text ?? "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/[\u2013\u2014]/g, " - ")
+    .toLowerCase();
+  const contractions: Array<[RegExp, string]> = [
+    [/\bwon't\b/g, "will not"],
+    [/\bcan't\b/g, "cannot"],
+    [/\bshan't\b/g, "shall not"],
+    [/\bain't\b/g, "is not"],
+    [/n't\b/g, " not"],
+    [/\bi'm\b/g, "i am"],
+    [/'re\b/g, " are"],
+    [/'ve\b/g, " have"],
+    [/'ll\b/g, " will"],
+    [/'d\b/g, " would"],
+    [/\b(what|there|it|that|here|who|where|everything|nothing|life)'s\b/g, "$1 is"],
+    // Apostrophe-less forms people type quickly.
+    [/\b(do|does|did|is|was|were|are|could|would|should|have|has|had)nt\b/g, "$1 not"],
+    [/\bcant\b/g, "cannot"],
+    [/\bim\b/g, "i am"],
+    [/\bive\b/g, "i have"],
+    [/\b(what|there)s\b/g, "$1 is"]
+  ];
+  for (const [pattern, replacement] of contractions) value = value.replace(pattern, replacement);
+  return value.replace(/\s+/g, " ").trim();
+};
+
 export const detectBoundary = (text: string): BoundaryKind | null => {
-  const value = (text ?? "").trim();
-  if (!value) return null;
-  if (RISK_PATTERNS.some((pattern) => pattern.test(value))) return "risk";
-  if (CLINICAL_PATTERNS.some((pattern) => pattern.test(value))) return "clinical";
+  const raw = (text ?? "").trim();
+  if (!raw) return null;
+  const light = raw.replace(/[\u2018\u2019\u201B\u2032]/g, "'").toLowerCase();
+  const normalised = normaliseForBoundary(raw);
+  const variants = [light, normalised];
+  if (RISK_PATTERNS.some((pattern) => variants.some((value) => pattern.test(value)))) return "risk";
+  if (CLINICAL_PATTERNS.some((pattern) => variants.some((value) => pattern.test(value)))) return "clinical";
   return null;
 };
 
@@ -105,5 +194,6 @@ export const getBoundaryReply = (
 export const BOUNDARY_SYSTEM_RULES = [
   "Safety boundary: you are a workplace coach, not a medical, therapy or crisis service.",
   "If the coachee raises physical or mental health symptoms, asks for a diagnosis, treatment, medication or therapy, briefly acknowledge it, say you are not a medical or therapy service, and signpost their GP, NHS 111, or their Employee Assistance Programme; then offer to continue with the work-related side only if appropriate.",
-  "If there is any mention or hint of suicide, self-harm or risk to life, do not continue coaching: say you are not a crisis service, urge them to call 999 or go to A&E if in immediate danger, and give Samaritans 116 123 (free, 24/7) and NHS 111."
+  "If there is any mention or hint of suicide, self-harm or risk to life, do not continue coaching: say you are not a crisis service, urge them to call 999 or go to A&E if in immediate danger, and give Samaritans 116 123 (free, 24/7) and NHS 111.",
+  "Treat indirect or passive signs the same way, for example: saying others would be better off or fine without them or if they disappeared, feeling like a burden, seeing no point or no way out, not being able to go on, giving belongings away, saying goodbye or writing goodbye letters, wishing they could sleep and not wake up, or having a plan or the means. Ordinary work figures of speech (\"the deadline is killing me\", \"I want to disappear from this meeting\") are not risk."
 ];
