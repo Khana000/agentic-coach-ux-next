@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
+import { BOUNDARY_SYSTEM_RULES, getBoundaryReply } from "../../../lib/server/boundary";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -1022,6 +1023,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing chat messages." }, { status: 400 });
   }
 
+  // Safety boundary first: medical, therapy or self-harm topics get fixed signposting text,
+  // before any coaching flow (plan, manager, end-session) or the AI model runs.
+  const boundaryReply = getBoundaryReply(
+    [...trimmedMessages].reverse().find((message) => message.role === "user")?.content ?? "",
+    allMessages.filter((message) => message.role === "assistant").map((message) => message.content)
+  );
+  if (boundaryReply) {
+    return NextResponse.json({ text: boundaryReply.text, boundary: boundaryReply.kind });
+  }
+
   const userTurnCount = trimmedMessages.filter((message) => message.role === "user").length;
   const latestUserMessage =
     [...trimmedMessages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -1301,6 +1312,7 @@ export async function POST(request: Request) {
     "Do not include laughter tokens like 'ha ha', 'haha', or 'lol'.",
     "If the user reports bullying, harassment, discrimination, or other code-of-conduct issues,",
     "stop coaching on the topic and recommend contacting HR or the appropriate reporting channel.",
+    ...BOUNDARY_SYSTEM_RULES,
     `PlanMode: ${planRequested ? "requested" : "not_requested"}`,
     `ManagerSupportMode: ${managerSupportRequested ? "requested" : "not_requested"}`,
     `ManagerExecutionMode: ${explicitManagerExecutionRequested ? "requested" : "not_requested"}`,
