@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import clientPromise from "../../../lib/mongodb";
+import { requireAccess } from "../../../lib/server/access";
+import getMongoClient from "../../../lib/mongodb";
 
 const COLLECTION = "sessions";
 const DB_NAME = process.env.MONGO_DB_NAME ?? "coaching";
@@ -62,28 +63,45 @@ const buildTitle = (payload: SessionPayload, messages: SessionMessage[]) => {
 };
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const limitParam = Number(searchParams.get("limit") ?? 20);
-  const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 100) : 20;
+  const access = requireAccess(request);
+  if (!access.ok) {
+    return access.response;
+  }
 
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const sessions = await db
-    .collection(COLLECTION)
-    .find({})
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .toArray();
+  try {
+    const { searchParams } = new URL(request.url);
+    const limitParam = Number(searchParams.get("limit") ?? 20);
+    const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 100) : 20;
 
-  return NextResponse.json({
-    sessions: sessions.map(({ _id, ...session }) => ({
-      id: _id.toString(),
-      ...session
-    }))
-  });
+    const client = await getMongoClient();
+    const db = client.db(DB_NAME);
+    const sessions = await db
+      .collection(COLLECTION)
+      .find({ ownerId: access.sid })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+
+    return NextResponse.json({
+      sessions: sessions.map(({ _id, ...session }) => ({
+        id: _id.toString(),
+        ...session
+      }))
+    });
+  } catch (error) {
+    return NextResponse.json({
+      sessions: [],
+      warning: "Session storage is temporarily unavailable."
+    });
+  }
 }
 
 export async function POST(request: Request) {
+  const access = requireAccess(request);
+  if (!access.ok) {
+    return access.response;
+  }
+
   let payload: SessionPayload;
   try {
     payload = (await request.json()) as SessionPayload;
@@ -104,16 +122,26 @@ export async function POST(request: Request) {
     nowState,
     messages,
     summary,
+    // Sessions are scoped to the access cookie that created them.
+    ownerId: access.sid,
     createdAt: now,
     updatedAt: now
   };
 
-  const client = await clientPromise;
-  const db = client.db(DB_NAME);
-  const result = await db.collection(COLLECTION).insertOne(session);
+  try {
+    const client = await getMongoClient();
+    const db = client.db(DB_NAME);
+    const result = await db.collection(COLLECTION).insertOne(session);
 
-  return NextResponse.json({
-    id: result.insertedId.toString(),
-    ...session
-  });
+    return NextResponse.json({
+      id: result.insertedId.toString(),
+      ...session
+    });
+  } catch (error) {
+    return NextResponse.json({
+      id: `fallback-${Date.now()}`,
+      ...session,
+      warning: "Session was not persisted because storage is temporarily unavailable."
+    });
+  }
 }

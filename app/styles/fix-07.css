@@ -1,0 +1,5 @@
+/* Fix #7: inline delivery feedback inside the Action Hub. */
+.hub-feedback{margin:6px 0 0;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.5;border:1px solid transparent}
+.hub-feedback--error{color:#f3b4b4;background:#e8909014;border-color:#e8909055}
+.hub-feedback--success{color:#b5efda;background:#b5efda12;border-color:#b5efda44}
+.hub-feedback strong{font-weight:600}

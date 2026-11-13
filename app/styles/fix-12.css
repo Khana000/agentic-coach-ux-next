@@ -1,0 +1,2 @@
+/* Fix #12: keyboard hint next to the composer label. */
+.composer-hint{margin-left:8px;font-weight:400;color:#8fa7a8;font-size:11px;letter-spacing:0}
