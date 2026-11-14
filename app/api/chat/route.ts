@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
-import { BOUNDARY_SYSTEM_RULES, getBoundaryReply } from "../../../lib/server/boundary";
+import { BOUNDARY_SYSTEM_RULES, detectBoundary, getBoundaryReply } from "../../../lib/server/boundary";
+import { looksLikeSafetyReply } from "../../../lib/safety-reply";
+import {
+  addDays,
+  extractPlanItemsFromPlanText,
+  londonToday,
+  normalisePlanItems,
+  resolveDueDate,
+  type PlanItem
+} from "../../../lib/action-plan";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -19,7 +28,7 @@ const PLAN_OPT_IN_QUESTION = "Would you like me to create a coaching plan for yo
 const MANAGER_MEETING_QUESTION =
   "Would you like to set up a meeting with your manager to align on what support they can provide?";
 const PLAN_FEASIBILITY_QUESTION =
-  "Does this action plan work for you? If you are happy, I will move it to Action Hub where you can add the coachee email and set individual action dates in the calendar fields.";
+  "Does this action plan work for you? Check the dates, and if you're happy I'll move it to the Action Hub, where you can edit them and add each action to your calendar.";
 const PLAN_STRUCTURED_OUTPUT_PATTERN =
   /^#{1,6}\s*(reflection|focus plan|first step|action plan|development plan)\b/im;
 const CLARIFICATION_PROMPT_PATTERN =
@@ -947,6 +956,11 @@ const compactPlanOutput = (markdown: string) => {
       continue;
     }
 
+    // The 3-bullet cap applies to the plan's actions; the First Step line is kept.
+    if (/^#{1,6}\s*first step\b/i.test(trimmed)) {
+      actionCount = -100;
+    }
+
     if (bulletPattern.test(trimmed) || numberedPattern.test(trimmed)) {
       actionCount += 1;
       if (actionCount > 3) {
@@ -972,18 +986,121 @@ const hasStructuredPlanOutput = (text: string) => {
   return headingPattern.test(text) && bulletPattern.test(text);
 };
 
+// Topic-neutral fallback actions, used only if the model's plan cannot be read.
+const NEUTRAL_PLAN_BULLETS = [
+  "- Write down the one change you want to make after today's session, due: tomorrow.",
+  "- Try that change in your next relevant conversation or meeting, due: end of the week.",
+  "- Review what worked and what you will adjust, due: next Friday."
+];
+
+const PLAN_JSON_TIMEOUT_MS = 8000;
+
+// "Sat 14 Nov = 2026-11-14 (today); Sun 15 Nov = ..." so the model never has to count weekdays itself.
+const buildDateTable = (today: string, days = 21) =>
+  Array.from({ length: days }, (_, offset) => {
+    const iso = addDays(today, offset);
+    const label = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }).format(
+      new Date(`${iso}T12:00:00Z`)
+    );
+    return `${label} = ${iso}${offset === 0 ? " (today)" : ""}`;
+  }).join("; ");
+
+/**
+ * Structured plan for the Action Hub: asks the model for strict JSON (activity, due date, time, duration)
+ * from the plan it just wrote plus the coachee's own words, then validates it with normalisePlanItems
+ * (dates resolved against today in Europe/London; crisis/HR/medical signposting dropped).
+ * Falls back to reading the plan's bullets if the JSON call fails. Safety turns are never sent.
+ */
+const buildStructuredPlan = async (options: {
+  openaiKey?: string;
+  model: string;
+  planText: string;
+  messages: ChatMessage[];
+  today: string;
+}): Promise<{ items: PlanItem[]; today: string; source: "model-json" | "plan-text" } | null> => {
+  const { openaiKey, model, planText, messages, today } = options;
+  const coachingTurns = messages
+    .filter((message) =>
+      message.role === "assistant" ? !looksLikeSafetyReply(message.content) : detectBoundary(message.content) === null
+    )
+    .slice(-10)
+    .map((message) => `${message.role === "user" ? "Coachee" : "Coach"}: ${message.content.slice(0, 600)}`)
+    .join("\n");
+
+  if (openaiKey) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PLAN_JSON_TIMEOUT_MS);
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          max_completion_tokens: 500,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: [
+                "Extract the coaching action plan as JSON only, shaped exactly like:",
+                '{"items":[{"activity":"...","dateText":"...","dueDate":"YYYY-MM-DD or null","time":"HH:MM or null","durationMinutes":number or null}]}',
+                `Today is ${today} (Europe/London). Resolve relative dates against today; weeks run Monday to Sunday.`,
+                `Calendar (use it, do not count weekdays yourself): ${buildDateTable(today)}.`,
+                "Use the actions in PLAN (at most 6), in order, each a short behaviour-specific activity without owner/timeline labels.",
+                "dateText is the due-date wording copied exactly from PLAN (for example 'Fri 20 Nov' or 'next Friday'); do not rewrite it.",
+                "Prefer any date, time or duration the coachee stated in the conversation over the coach's suggestion.",
+                "Use null when no date or time was given. Never invent a time.",
+                "Never include crisis, medical, mental-health or HR-referral signposting as an action."
+              ].join("\n")
+            },
+            { role: "user", content: `PLAN:\n${planText.slice(0, 2500)}\n\nCONVERSATION:\n${coachingTurns}` }
+          ]
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const raw = JSON.parse(String(data?.choices?.[0]?.message?.content ?? "{}"));
+        const items = normalisePlanItems(raw?.items, today);
+        if (items.length > 0) {
+          // The plan text's own due wording, resolved deterministically, wins over the model's date for the same
+          // action (Focus Plan bullets and the First Step line alike); the model only fills dates the text lacks.
+          const planLines = planText.split("\n").map((line) => line.trim()).filter(Boolean);
+          items.forEach((item) => {
+            const probe = item.activity.toLowerCase().slice(0, 32);
+            const line = planLines.find((candidate) => candidate.toLowerCase().includes(probe));
+            if (!line) return;
+            const wording = line.match(/(?:timeline|due|by when|deadline|when)\s*:\s*(.+)$/i)?.[1] ?? line;
+            const textDate = resolveDueDate(wording, today);
+            if (textDate) item.dueDate = textDate;
+          });
+          return { items, today, source: "model-json" };
+        }
+      } else {
+        console.error(`[chat] plan JSON request failed: ${response.status}`);
+      }
+    } catch (error) {
+      console.error("[chat] plan JSON request error:", error instanceof Error ? error.name : "unknown");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const items = extractPlanItemsFromPlanText(planText, today);
+  return items.length > 0 ? { items, today, source: "plan-text" } : null;
+};
+
 const buildFallbackPlan = () =>
   [
     "## Reflection",
     "You are ready to move from insight to action. A focused, realistic plan will help you build momentum.",
     "",
     "## Focus Plan",
-    "- Define one specific presentation outcome for your next key meeting, owner: you, timeline: within 24 hours.",
-    "- Rehearse your opening and one influence point with a trusted colleague, owner: you, timeline: before your next presentation.",
-    "- Deliver the presentation using the revised structure and capture feedback from at least one stakeholder, owner: you, timeline: in your next live opportunity.",
+    ...NEUTRAL_PLAN_BULLETS,
     "",
     "## First Step",
-    "In the next 24 hours, write your one-sentence presentation objective and your opening line.",
+    "In the next 24 hours, write down the one change you most want to make and when you will first try it.",
     "",
     PLAN_FEASIBILITY_QUESTION
   ].join("\n");
@@ -1118,7 +1235,15 @@ export async function POST(request: Request) {
     !isNegative(latestUserMessage) &&
     (endSessionIntentPattern.test(latestUserMessage) || isAffirmative(latestUserMessage));
 
-  if (explicitEndSessionRequested || promptedEndSessionRequested) {
+  // Wrapping up without a plan yet: summarise the session as a dated action plan first (the end-session
+  // question follows once the plan is agreed), instead of ending straight away or asking for consent first.
+  const wrapUpPlanNeeded =
+    !hasGeneratedPlanAlready &&
+    !hasAskedEndSessionPrompt &&
+    userTurnCount >= 3 &&
+    (explicitEndSessionRequested || discussionMarkedComplete);
+
+  if ((explicitEndSessionRequested || promptedEndSessionRequested) && !wrapUpPlanNeeded) {
     return NextResponse.json({ text: END_SESSION_CLOSING_TEXT, endSession: true });
   }
 
@@ -1141,12 +1266,25 @@ export async function POST(request: Request) {
     !shouldOfferManagerSupportPrompt &&
     !nonLeadershipQuestionRequested &&
     userTurnCount >= 2 &&
-    discussionMarkedComplete;
+    discussionMarkedComplete &&
+    !wrapUpPlanNeeded;
 
-  const planRequested = explicitPlanRequested || hasUserAcceptedPlan;
+  const planRequested = explicitPlanRequested || hasUserAcceptedPlan || wrapUpPlanNeeded;
+  const todayLondon = londonToday();
+  const todayLondonLabel = new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "Europe/London"
+  }).format(new Date());
 
   if (shouldOfferManagerSupportPrompt) {
-    return NextResponse.json({ text: MANAGER_MEETING_QUESTION });
+    return NextResponse.json({
+      text: hasUserApprovedPlanFeasibility
+        ? `Great, your plan is agreed. It's in the Action Hub with its dates, and you can add each action to your calendar from there.\n\n${MANAGER_MEETING_QUESTION}`
+        : MANAGER_MEETING_QUESTION
+    });
   }
 
   if (
@@ -1198,7 +1336,8 @@ export async function POST(request: Request) {
   const ragKnowledge = retrieveCoachingKnowledge(
     `${latestUserMessage} ${payload.context ?? ""} grow disc gestalt heron sdi action plan empathy`
   );
-  const maxResponseTokens = planRequested ? 160 : 120;
+  // Plans need room for three dated actions; 160 tokens often cut them off and triggered the fallback plan.
+  const maxResponseTokens = planRequested ? 380 : 120;
   const systemPrompt = [
     "You are an executive coaching assistant.",
     `The user selected a ${coachGender} coach persona.`,
@@ -1288,8 +1427,11 @@ export async function POST(request: Request) {
       ? "- Exactly 3 action bullets only, each one line and behavior-specific."
       : "Keep guidance practical and behavior-focused.",
     planRequested
-      ? "- For each bullet include: action, owner, and timeline."
+      ? `- Each bullet: the action, then ", due: <day>" as a specific date (for example "due: Fri 20 Nov"), plus a time only if the coachee gave one. Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Use dates the coachee stated; otherwise propose realistic dates within the next two weeks.`
       : "Avoid filler and avoid repeating the same framework names.",
+    planRequested
+      ? "- Base the actions on what the coachee said they would do in this conversation. Summarise their own commitments; do not invent unrelated topics. Never include crisis, medical or HR-referral signposting as actions."
+      : "Keep the conversation focused on the coachee's goal.",
     planRequested ? "## First Step" : "Do not mention the word SMART.",
     planRequested
       ? "- One sentence for what to do in the next 24 hours."
@@ -1298,7 +1440,7 @@ export async function POST(request: Request) {
       ? "Keep total plan output between 90 and 170 words."
       : "Do not include references/citations/source lists.",
     planRequested
-      ? "In plan mode, finish with a short check question on commitment or feasibility."
+      ? "In plan mode, end after the First Step; the app adds the question asking the coachee to confirm the actions and dates."
       : "In coaching mode, always end your response with one clear follow-up question to continue a two-way dialogue.",
     managerSupportRequested && explicitManagerExecutionRequested
       ? "Because the coachee explicitly requested manager execution support, include concise talking prompts and an optional short manager email draft."
@@ -1331,8 +1473,34 @@ export async function POST(request: Request) {
     `DiscCue: ${discCue.cue}`,
     `SdiRapportCue: ${sdiRapportCue.cue}`,
     `RagKnowledgeIds: ${ragKnowledge.ids.join(",")}`,
-    `NowState: ${nowState}`
+    `NowState: ${nowState}`,
+    ...(planRequested
+      ? [
+          "PLAN MODE OVERRIDE (highest priority, overrides the root-cause, Heron and GROW pacing rules above): the coachee has asked for their plan now.",
+          "Do not ask exploratory questions or say 'before we jump into the plan'. Reply with the ## Reflection, ## Focus Plan and ## First Step structure immediately."
+        ]
+      : [])
   ].join("\n");
+
+  // Plan-only prompt, used once if the main reply comes back without the plan structure.
+  const planRetryPrompt = [
+    "You are an executive coach closing a coaching session. Summarise the coaching actions the coachee agreed in this conversation as a plan.",
+    "Use exactly this structure and nothing else:",
+    "## Reflection",
+    "1 short paragraph on what the coachee wants to change.",
+    "## Focus Plan",
+    `- Exactly 3 action bullets, each one line: the action, then ", due: <day>" as a specific date (for example "due: Fri 20 Nov"). Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Use dates the coachee stated; otherwise propose realistic dates within the next two weeks. Add a time only if the coachee gave one.`,
+    "- Base the actions on what the coachee said in this conversation. Never include crisis, medical or HR-referral signposting as actions.",
+    "## First Step",
+    "- One sentence for what to do in the next 24 hours.",
+    "Keep it between 90 and 170 words. UK English. Do not ask exploratory questions or add a closing question."
+  ].join("\n");
+
+  // In plan mode, leave safety replies (crisis, HR referral, medical) out of the model context so their
+  // signposting is never summarised as coaching actions.
+  const llmMessages = planRequested
+    ? trimmedMessages.filter((message) => message.role !== "assistant" || !looksLikeSafetyReply(message.content))
+    : trimmedMessages;
 
   let response: Response;
 
@@ -1348,7 +1516,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           messages: [
             { role: "system", content: systemPrompt },
-            ...trimmedMessages
+            ...llmMessages
           ],
           context: payload.context,
           style: payload.style,
@@ -1374,7 +1542,7 @@ export async function POST(request: Request) {
             model,
             messages: [
               { role: "system", content: systemPrompt },
-              ...trimmedMessages
+              ...llmMessages
             ],
             temperature: 0.4,
             max_completion_tokens: maxResponseTokens
@@ -1395,7 +1563,7 @@ export async function POST(request: Request) {
         model,
         messages: [
           { role: "system", content: systemPrompt },
-          ...trimmedMessages
+          ...llmMessages
         ],
         temperature: 0.4,
         max_completion_tokens: maxResponseTokens
@@ -1425,10 +1593,51 @@ export async function POST(request: Request) {
     const stripped = stripPlanSections(text);
     text = stripped || "What feels like the core root cause behind this for you right now?";
   } else {
-    const compacted = compactPlanOutput(text);
-    const fallbackPlan =
-      "## Reflection\nYou are ready to move from insight to action. A focused, realistic plan will help you build momentum.\n\n## Focus Plan\n- Define one specific presentation outcome for your next key meeting, owner: you, timeline: within 24 hours.\n- Rehearse your opening and one influence point with a trusted colleague, owner: you, timeline: before your next presentation.\n- Deliver the presentation using the revised structure and capture feedback from at least one stakeholder, owner: you, timeline: in your next live opportunity.\n\n## First Step\nIn the next 24 hours, write your one-sentence presentation objective and your opening line.";
+    let compacted = compactPlanOutput(text);
+    if (!hasStructuredPlanOutput(compacted) && openaiKey) {
+      try {
+        const retry = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "system", content: planRetryPrompt }, ...llmMessages],
+            temperature: 0.3,
+            max_completion_tokens: maxResponseTokens
+          })
+        });
+        if (retry.ok) {
+          const retryData = await retry.json();
+          const retryText = String(retryData?.choices?.[0]?.message?.content ?? "");
+          const retryCompacted = compactPlanOutput(retryText);
+          if (hasStructuredPlanOutput(retryCompacted)) {
+            console.warn("[chat] plan retry used (main reply had no plan structure)");
+            text = retryText;
+            compacted = retryCompacted;
+          }
+        }
+      } catch (error) {
+        console.error("[chat] plan retry error:", error instanceof Error ? error.name : "unknown");
+      }
+    }
+    const fallbackPlan = `## Reflection\nYou are ready to move from insight to action. A focused, realistic plan will help you build momentum.\n\n## Focus Plan\n${NEUTRAL_PLAN_BULLETS.join("\n")}\n\n## First Step\nIn the next 24 hours, write down the one change you most want to make and when you will first try it.`;
+    if (!hasStructuredPlanOutput(compacted)) {
+      console.warn(
+        `[chat] plan fallback used: finish=${String(data?.choices?.[0]?.finish_reason ?? "n/a")} chars=${String(text).length} start=${JSON.stringify(String(text).slice(0, 160))}`
+      );
+    }
     text = hasStructuredPlanOutput(compacted) ? compacted : fallbackPlan;
+    // One closing question only: drop the model's own standalone question lines (the confirm question is appended below).
+    text = text
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (/^([-*+]|\d+[.)]|#)/.test(trimmed) || /does this action plan work for you/i.test(trimmed)) return true;
+        return !(trimmed.endsWith("?") || /^(please )?(let me know|confirm)\b.*\b(actions?|dates?|plan)\b/i.test(trimmed));
+      })
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     if (!/does this action plan work for you\??/i.test(text)) {
       text = `${text}\n\n${PLAN_FEASIBILITY_QUESTION}`;
     }
@@ -1510,8 +1719,15 @@ export async function POST(request: Request) {
     ? `tool:${toolEnvelope.toolCalls.map((toolCall) => toolCall.name).join(",")}`
     : undefined;
 
+  // Structured plan for the Action Hub (activities + agreed dates), alongside the plan text.
+  const plan =
+    planRequested && !hasEndSessionTool
+      ? await buildStructuredPlan({ openaiKey, model, planText: cleanText, messages: allMessages, today: todayLondon })
+      : null;
+
   return NextResponse.json({
     text: cleanText,
+    ...(plan ? { plan } : {}),
     endSession: hasEndSessionTool,
     debug: debugLabel,
     toolCalls: toolEnvelope.toolCalls.length > 0 ? toolEnvelope.toolCalls : undefined

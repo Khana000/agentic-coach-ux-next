@@ -8,6 +8,7 @@ import "./styles/fix-12.css";
 import "./styles/fix-14.css";
 import "./styles/fix-15.css";
 import "./styles/change-avatar.css";
+import "./styles/action-plan.css";
 
 export const metadata = {
   title: "Executive & Leadership Coaching",

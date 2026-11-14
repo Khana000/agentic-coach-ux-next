@@ -15,6 +15,14 @@ import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { isSafetyKind, isSafetyReplyMessage, type SafetyKind } from "../lib/safety-reply";
+import {
+  buildPlanIcs,
+  formatDueDate,
+  googleCalendarUrl,
+  londonToday,
+  normalisePlanItems,
+  type PlanItem
+} from "../lib/action-plan";
 
 type AppScreen = "cover" | "access" | "welcome" | "session";
 type CoachGender = "male" | "female";
@@ -60,6 +68,9 @@ type SessionSnapshot = {
   pendingPlanItems: string[];
   pendingPlanSignature: string;
   appliedPlanSignature: string;
+  // Structured end-of-session plan (activities + agreed dates) from the chat API.
+  planDraft?: PlanItem[] | null;
+  planConfirmed?: boolean;
 };
 
 type AssistantToolCall = {
@@ -738,6 +749,20 @@ export default function HomePage() {
   const [isSendingAllCalendarInvites, setIsSendingAllCalendarInvites] = useState(false);
   const [isSendingCombinedDelivery, setIsSendingCombinedDelivery] = useState(false);
   const [hubFeedback, setHubFeedbackState] = useState<HubFeedback | null>(null);
+  // Structured action plan from the chat API: editable in the Action Hub, then confirmed and added to calendars.
+  const [planDraft, setPlanDraftState] = useState<PlanItem[] | null>(null);
+  const [planConfirmed, setPlanConfirmedState] = useState(false);
+  const [planFeedback, setPlanFeedback] = useState<{ tone: "error" | "success"; text: string } | null>(null);
+  const planDraftRef = useRef<PlanItem[] | null>(null);
+  const planConfirmedRef = useRef(false);
+  const setPlanDraft = (next: PlanItem[] | null) => {
+    planDraftRef.current = next;
+    setPlanDraftState(next);
+  };
+  const setPlanConfirmed = (next: boolean) => {
+    planConfirmedRef.current = next;
+    setPlanConfirmedState(next);
+  };
 
   const chatMessagesRef = useRef(chatMessages);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -847,6 +872,79 @@ export default function HomePage() {
     setActionHubItems(mergedItems);
     setStatusMessage(`Imported ${addedCount} transcript action${addedCount === 1 ? "" : "s"} into Action Hub.`);
     setErrorMessage("");
+  };
+
+  const updatePlanItem = (index: number, patch: Partial<PlanItem>) => {
+    const current = planDraftRef.current ?? [];
+    const next = current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item));
+    setPlanDraft(next);
+    setPlanFeedback(null);
+  };
+
+  // Confirming moves the plan into the Action Hub with its dates (and marks dated actions as agreed for calendar).
+  const confirmStructuredPlan = () => {
+    const items = (planDraftRef.current ?? [])
+      .map((item) => ({ ...item, activity: item.activity.replace(/\s+/g, " ").trim() }))
+      .filter((item) => item.activity.length > 0);
+    if (items.length === 0) {
+      setPlanFeedback({ tone: "error", text: "Add at least one action before confirming." });
+      return false;
+    }
+    const activities = normalizeActionItems(items.map((item) => item.activity));
+    if (!finalizeActionPlan(activities, `structured:${buildActionPlanSignature(activities)}`)) {
+      return false;
+    }
+    setActionDueDates((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => {
+        if (item.dueDate) next[item.activity] = item.dueDate;
+      });
+      return next;
+    });
+    setActionCalendarAgreements((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => {
+        next[item.activity] = item.dueDate ? "agreed" : previous[item.activity] ?? "pending";
+      });
+      return next;
+    });
+    setCalendarAction((previous) => previous || activities[0] || "");
+    setPlanDraft(items);
+    setPlanConfirmed(true);
+    const undated = items.filter((item) => !item.dueDate).length;
+    setPlanFeedback({
+      tone: undated ? "error" : "success",
+      text: undated
+        ? `Plan confirmed. ${undated} action${undated === 1 ? " still needs" : "s still need"} a date before it can go in your calendar.`
+        : "Plan confirmed. Add the actions to your calendar below."
+    });
+    setStatusMessage("Action plan confirmed in the Action Hub, with dates. Add it to your calendar from there.");
+    return true;
+  };
+
+  // Standards-compliant .ics (Europe/London, VEVENT + VALARM). Opens in Apple Calendar, Outlook or Google Calendar.
+  const downloadPlanIcs = (items: PlanItem[], filename: string) => {
+    const dated = items.filter((item) => item.dueDate);
+    if (dated.length === 0) {
+      setPlanFeedback({ tone: "error", text: "Add a due date first, then add it to your calendar." });
+      return;
+    }
+    const ics = buildPlanIcs(dated);
+    const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const skipped = items.length - dated.length;
+    setPlanFeedback({
+      tone: "success",
+      text: `Calendar file ready (${dated.length} action${dated.length === 1 ? "" : "s"}, with reminders). Open it to add to your calendar.${
+        skipped ? ` ${skipped} undated action${skipped === 1 ? " was" : "s were"} left out.` : ""
+      }`
+    });
   };
 
   const appendLiveMessage = (role: ChatRole, rawContent: string) => {
@@ -1169,6 +1267,11 @@ export default function HomePage() {
           setAuthenticatedBetaUsername(snapshot.authenticatedBetaUsername);
           setUsername(snapshot.authenticatedBetaUsername);
         }
+        if (Array.isArray(snapshot.planDraft) && snapshot.planDraft.length > 0) {
+          const restoredPlan = normalisePlanItems(snapshot.planDraft, londonToday());
+          setPlanDraft(restoredPlan.length ? restoredPlan : null);
+          setPlanConfirmed(Boolean(snapshot.planConfirmed) && restoredPlan.length > 0);
+        }
         if (snapshot.pendingPlanItems?.length && snapshot.pendingPlanSignature) {
           pendingPlanItemsRef.current = snapshot.pendingPlanItems;
           pendingPlanSignatureRef.current = snapshot.pendingPlanSignature;
@@ -1226,7 +1329,9 @@ export default function HomePage() {
       authenticatedBetaUsername,
       pendingPlanItems: pendingPlanItemsRef.current,
       pendingPlanSignature: pendingPlanSignatureRef.current,
-      appliedPlanSignature: appliedPlanSignatureRef.current
+      appliedPlanSignature: appliedPlanSignatureRef.current,
+      planDraft,
+      planConfirmed
     };
     try {
       window.sessionStorage.setItem(SESSION_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
@@ -1250,7 +1355,9 @@ export default function HomePage() {
     calendarAction,
     calendarStartLocal,
     trialStatus,
-    authenticatedBetaUsername
+    authenticatedBetaUsername,
+    planDraft,
+    planConfirmed
   ]);
 
   // Warn before closing the tab or navigating away mid-session (a refresh restores the session).
@@ -1312,6 +1419,10 @@ export default function HomePage() {
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (lastMessage?.role !== "assistant" || isSafetyReplyMessage(lastMessage)) {
+      return;
+    }
+    // A structured plan from the server takes precedence over reading plan bullets from the text.
+    if (planDraftRef.current?.length) {
       return;
     }
 
@@ -1383,6 +1494,15 @@ export default function HomePage() {
       return;
     }
 
+    // "Yes / that works" after a structured plan confirms it (with its dates) into the Action Hub.
+    if (planDraftRef.current?.length) {
+      const reply = lastMessage.content.trim();
+      if (!planConfirmedRef.current && reply && !isPlanRejectedMessage(reply) && isPlanApprovedMessage(reply)) {
+        confirmStructuredPlan();
+      }
+      return;
+    }
+
     if (!pendingPlanSignatureRef.current) {
       return;
     }
@@ -1416,7 +1536,7 @@ export default function HomePage() {
       return;
     }
 
-    if (pendingPlanSignatureRef.current) {
+    if (pendingPlanSignatureRef.current || planDraftRef.current?.length) {
       return;
     }
 
@@ -1827,6 +1947,9 @@ export default function HomePage() {
       setActionHubItems([]);
       setCalendarAction("");
       setActionDueDates({});
+      setPlanDraft(null);
+      setPlanConfirmed(false);
+      setPlanFeedback(null);
       appliedPlanSignatureRef.current = "";
       clearPendingActionPlan();
       if (!sharedTestMode) {
@@ -1871,6 +1994,9 @@ export default function HomePage() {
     setActionHubItems([]);
     setCalendarAction("");
     setActionDueDates({});
+    setPlanDraft(null);
+    setPlanConfirmed(false);
+    setPlanFeedback(null);
     appliedPlanSignatureRef.current = "";
     clearPendingActionPlan();
     setStatusMessage("Coaching session started.");
@@ -2579,6 +2705,7 @@ export default function HomePage() {
         error?: string;
         toolCalls?: unknown;
         boundary?: unknown;
+        plan?: { items?: unknown; today?: string };
       };
 
       if (!response.ok) {
@@ -2597,6 +2724,14 @@ export default function HomePage() {
           ? { role: "assistant", content: assistantText, safety }
           : { role: "assistant", content: assistantText };
         const updatedMessages = [...nextMessages, assistantMessage];
+        // Structured plan (never sent with safety replies): show it in the Action Hub for review before confirming.
+        const planItems = !safety && data?.plan ? normalisePlanItems(data.plan.items, londonToday()) : [];
+        if (planItems.length > 0) {
+          setPlanDraft(planItems);
+          setPlanConfirmed(false);
+          setPlanFeedback(null);
+          setStatusMessage("Your action plan is in the Action Hub. Check the dates, then confirm it or reply yes.");
+        }
         setChatMessages(updatedMessages);
         chatMessagesRef.current = updatedMessages;
       }
@@ -2932,12 +3067,134 @@ export default function HomePage() {
                   <CardDescription>Action plans requested during coaching are shown here.</CardDescription>
                 </CardHeader>
                 <CardContent className="form-grid">
-                  {!executionToolsEnabled ? (
+                  {planDraft && planDraft.length > 0 ? (
+                    <section className="plan-panel" aria-labelledby="plan-panel-title" data-testid="plan-panel">
+                      <div className="plan-panel-head">
+                        <h3 id="plan-panel-title">Your action plan</h3>
+                        <span className={`plan-status${planConfirmed ? " plan-status--ok" : ""}`}>
+                          {planConfirmed ? "Confirmed" : "Check the dates, then confirm"}
+                        </span>
+                      </div>
+                      <ol className="plan-list">
+                        {planDraft.map((item, index) => {
+                          const googleUrl = googleCalendarUrl(item);
+                          return (
+                            <li key={item.id} className="plan-item" data-testid="plan-item">
+                              <div className="field">
+                                <Label htmlFor={`plan-activity-${index}`}>Action {index + 1}</Label>
+                                <Textarea
+                                  id={`plan-activity-${index}`}
+                                  rows={2}
+                                  value={item.activity}
+                                  onChange={(event) => updatePlanItem(index, { activity: event.target.value })}
+                                />
+                              </div>
+                              <div className="plan-item-row">
+                                <div className="field">
+                                  <Label htmlFor={`plan-date-${index}`}>Due date</Label>
+                                  <Input
+                                    id={`plan-date-${index}`}
+                                    type="date"
+                                    min={londonToday()}
+                                    value={item.dueDate ?? ""}
+                                    onChange={(event) => updatePlanItem(index, { dueDate: event.target.value || null })}
+                                  />
+                                </div>
+                                <div className="field">
+                                  <Label htmlFor={`plan-time-${index}`}>Time (optional)</Label>
+                                  <Input
+                                    id={`plan-time-${index}`}
+                                    type="time"
+                                    value={item.time ?? ""}
+                                    onChange={(event) => updatePlanItem(index, { time: event.target.value || null })}
+                                  />
+                                </div>
+                                <div className="field">
+                                  <Label htmlFor={`plan-duration-${index}`}>Length</Label>
+                                  <Select
+                                    id={`plan-duration-${index}`}
+                                    value={String(item.durationMinutes ?? 30)}
+                                    disabled={!item.time}
+                                    onChange={(event) => updatePlanItem(index, { durationMinutes: Number(event.target.value) })}
+                                  >
+                                    {[15, 30, 45, 60, 90, 120].map((minutes) => (
+                                      <option key={minutes} value={minutes}>
+                                        {minutes < 60 ? `${minutes} min` : `${minutes / 60} hr`}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              </div>
+                              <p className={`plan-item-date${item.dueDate ? "" : " plan-item-date--missing"}`}>
+                                {item.dueDate
+                                  ? `Due ${formatDueDate(item.dueDate)}${item.time ? ` at ${item.time}` : " (all day)"}`
+                                  : "Date needed: pick a due date"}
+                              </p>
+                              <div className="inline-actions plan-item-actions">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!item.dueDate}
+                                  onClick={() => downloadPlanIcs([item], `coaching-action-${index + 1}.ics`)}
+                                >
+                                  Add to calendar
+                                </Button>
+                                {googleUrl ? (
+                                  <a className="plan-link" href={googleUrl} target="_blank" rel="noopener noreferrer">
+                                    Google Calendar
+                                  </a>
+                                ) : null}
+                                {planConfirmed && deliveryEmail.trim() ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={!item.dueDate || isSendingCalendarInvite}
+                                    onClick={() => void sendCalendarInvite(item.activity, index)}
+                                  >
+                                    Email invite
+                                  </Button>
+                                ) : null}
+                              </div>
+                              {hubFeedback?.target === `item:${index}` ? (
+                                <p className={`hub-feedback hub-feedback--${hubFeedback.tone}`} role={hubFeedback.tone === "error" ? "alert" : "status"}>
+                                  {hubFeedback.text}
+                                </p>
+                              ) : null}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                      <div className="inline-actions">
+                        <Button type="button" onClick={() => confirmStructuredPlan()}>
+                          {planConfirmed ? "Update Action Hub" : "Confirm plan"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={!planDraft.some((item) => item.dueDate)}
+                          onClick={() => downloadPlanIcs(planDraft, "coaching-action-plan.ics")}
+                        >
+                          Add all to calendar
+                        </Button>
+                      </div>
+                      {planFeedback ? (
+                        <p className={`hub-feedback hub-feedback--${planFeedback.tone}`} role={planFeedback.tone === "error" ? "alert" : "status"}>
+                          {planFeedback.text}
+                        </p>
+                      ) : null}
+                      <p className="info">
+                        Calendar files (.ics) open in Apple Calendar, Outlook and Google Calendar, with a reminder for each action. No account needed, and nothing is emailed.
+                      </p>
+                    </section>
+                  ) : null}
+                  {planDraft && planDraft.length > 0 && !planConfirmed ? null : !executionToolsEnabled ? (
                     <>
                       <p className="info">
                         Your action plan will appear here. Ask your coach for one, or choose “Create action plan” under Session actions.
                       </p>
-                      {transcriptActionItems.length > 0 ? (
+                      {transcriptActionItems.length > 0 && !planDraft?.length ? (
                         <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
                           Import {transcriptActionItems.length} action{transcriptActionItems.length === 1 ? "" : "s"} from transcript
                         </Button>
@@ -2949,7 +3206,7 @@ export default function HomePage() {
                         No actions in Action Hub yet. Confirm the proposed plan (for example: yes / okay / fine)
                         and it will transfer here automatically.
                       </p>
-                      {transcriptActionItems.length > 0 ? (
+                      {transcriptActionItems.length > 0 && !planDraft?.length ? (
                         <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
                           Import {transcriptActionItems.length} action{transcriptActionItems.length === 1 ? "" : "s"} from transcript
                         </Button>
@@ -2957,7 +3214,7 @@ export default function HomePage() {
                     </>
                   ) : (
                     <>
-                      {hasTranscriptItemsNotInHub ? (
+                      {hasTranscriptItemsNotInHub && !planDraft?.length ? (
                         <Button type="button" variant="outline" onClick={importTranscriptActionsToHub}>
                           Sync additional actions from transcript
                         </Button>
@@ -2985,6 +3242,7 @@ export default function HomePage() {
                           We’ll use this for reminder emails once they’re available. Nothing is sent from this field today.
                         </p>
                       </div>
+                      {planDraft?.length ? null : (
                       <div className="action-hub-list">
                         {actionHubItems.map((item, index) => (
                           <div key={item} className="action-hub-item">
@@ -3044,6 +3302,7 @@ export default function HomePage() {
                           </div>
                         ))}
                       </div>
+                      )}
                       <div className="field">
                         <Label htmlFor="delivery-name">Recipient name (optional)</Label>
                         <Input
@@ -3053,6 +3312,8 @@ export default function HomePage() {
                           placeholder="Coachee name"
                         />
                       </div>
+                      {planDraft?.length ? null : (
+                      <>
                       <div className="field">
                         <Label htmlFor="calendar-action">Action for calendar invite</Label>
                         <Select
@@ -3076,6 +3337,8 @@ export default function HomePage() {
                           onChange={(event) => setCalendarStartLocal(event.target.value)}
                         />
                       </div>
+                      </>
+                      )}
                       <div className="inline-actions">
                         <Button
                           type="button"

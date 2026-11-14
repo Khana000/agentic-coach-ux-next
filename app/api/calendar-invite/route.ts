@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
+import { buildPlanIcs, isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
 
 type CalendarInviteRequest = {
   toEmail?: string;
@@ -9,35 +10,19 @@ type CalendarInviteRequest = {
   endAt?: string;
 };
 
-const toIcsDate = (date: Date) => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-
-const escapeIcsText = (value: string) =>
-  value
-    .replace(/\\/g, "\\\\")
-    .replace(/\n/g, "\\n")
-    .replace(/,/g, "\\,")
-    .replace(/;/g, "\\;");
-
-const buildCalendarInvite = (actionText: string, start: Date, end: Date, toEmail: string, name: string) => {
-  const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@agenticcoach`;
-
-  return [
-    "BEGIN:VCALENDAR",
-    "PRODID:-//Agentic Coach//Calendar Invite//EN",
-    "VERSION:2.0",
-    "CALSCALE:GREGORIAN",
-    "METHOD:REQUEST",
-    "BEGIN:VEVENT",
-    `UID:${uid}`,
-    `DTSTAMP:${toIcsDate(new Date())}`,
-    `DTSTART:${toIcsDate(start)}`,
-    `DTEND:${toIcsDate(end)}`,
-    `SUMMARY:${escapeIcsText(`Coaching Action: ${actionText}`)}`,
-    `DESCRIPTION:${escapeIcsText("Time-bound coaching action reminder from Agentic Coach.")}`,
-    `ATTENDEE;CN=${escapeIcsText(name)}:mailto:${toEmail}`,
-    "END:VEVENT",
-    "END:VCALENDAR"
-  ].join("\r\n");
+// Wall-clock date/time in Europe/London for an instant (the invite is written in that timezone).
+const toLondonParts = (date: Date) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
 };
 
 export async function POST(request: Request) {
@@ -64,6 +49,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing toEmail or actionText." }, { status: 400 });
   }
 
+  // Server-side recipient checks (the browser check can be bypassed): one well-formed address, no header
+  // injection, optional domain allow-list via CALENDAR_ALLOWED_RECIPIENT_DOMAINS. Runs before any email is sent.
+  if (!isValidRecipientEmail(toEmail)) {
+    return NextResponse.json({ error: "Enter a single valid email address.", code: "invalid_recipient" }, { status: 400 });
+  }
+  if (!isRecipientAllowed(toEmail, process.env.CALENDAR_ALLOWED_RECIPIENT_DOMAINS)) {
+    return NextResponse.json(
+      { error: "Invites can only be sent to approved email domains.", code: "recipient_not_allowed" },
+      { status: 403 }
+    );
+  }
+  if (actionText.length > 300 || /[\r\n]/.test(coacheeName) || coacheeName.length > 100) {
+    return NextResponse.json({ error: "Invalid invite details.", code: "invalid_payload" }, { status: 400 });
+  }
+
   if (!resendApiKey || !fromEmail) {
     console.error("[calendar-invite] Not configured: set RESEND_API_KEY and CALENDAR_FROM_EMAIL.");
     return NextResponse.json(
@@ -82,7 +82,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid endAt date." }, { status: 400 });
   }
 
-  const ics = buildCalendarInvite(actionText, start, end, toEmail, coacheeName);
+  const londonStart = toLondonParts(start);
+  const durationMinutes = Math.max(5, Math.min(480, Math.round((end.getTime() - start.getTime()) / 60000) || 30));
+  const ics = buildPlanIcs(
+    [{ id: "a1", activity: actionText, dueDate: londonStart.date, time: londonStart.time, durationMinutes }],
+    { method: "REQUEST", attendeeEmail: toEmail, attendeeName: coacheeName }
+  );
   const subject = `Coaching calendar invite: ${actionText}`;
 
   const emailResponse = await fetch("https://api.resend.com/emails", {

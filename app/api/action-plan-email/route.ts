@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
+import { isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
 
 type ActionPlanEmailRequest = {
   toEmail?: string;
@@ -32,6 +33,17 @@ export async function POST(request: Request) {
 
   if (!toEmail) {
     return NextResponse.json({ error: "Missing toEmail." }, { status: 400 });
+  }
+
+  // Server-side recipient checks, before anything is sent (see calendar-invite route).
+  if (!isValidRecipientEmail(toEmail)) {
+    return NextResponse.json({ error: "Enter a single valid email address.", code: "invalid_recipient" }, { status: 400 });
+  }
+  if (!isRecipientAllowed(toEmail, process.env.CALENDAR_ALLOWED_RECIPIENT_DOMAINS)) {
+    return NextResponse.json(
+      { error: "Emails can only be sent to approved email domains.", code: "recipient_not_allowed" },
+      { status: 403 }
+    );
   }
 
   if (!summary && actions.length === 0) {
