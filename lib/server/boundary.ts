@@ -12,7 +12,7 @@
  * Signposting is UK-specific (NHS 111, 999, Samaritans) to match the current user base.
  */
 
-export type BoundaryKind = "risk" | "clinical";
+export type BoundaryKind = "risk" | "conduct" | "clinical";
 
 // Any sign of risk to life or self-harm. Always triggers, every time.
 // Patterns are matched against normalised text (see normaliseForBoundary): lower case,
@@ -79,6 +79,83 @@ const RISK_PATTERNS: RegExp[] = [
   /\b(throw\s+myself|throwing\s+myself|step|stepping|jump|jumping|walk|walking)\s+in\s+front\s+of\s+(a|the)\s+(train|bus|car|lorry|truck|tube)\b/
 ];
 
+// Workplace mistreatment: bullying, harassment, discrimination (incl. protected characteristics),
+// victimisation, abuse. Always triggers a referral to HR / a trusted manager / speak-up line / Acas.
+// Matched against normalised text. Work figures of speech are guarded ("bullish", "discriminate between",
+// "harass the vendor for an invoice", "anti-racism training").
+const PROTECTED =
+  "(woman|women|female|a mum|a mom|a mother|black|asian|brown|mixed race|muslim|jewish|hindu|sikh|christian|gay|lesbian|bisexual|bi|trans|transgender|non-binary|disabled|pregnant|older|too old|over \\d0|neurodivergent|autistic|dyslexic|deaf|blind|an immigrant|foreign|my (race|religion|faith|accent|skin colou?r|skin|ethnicity|nationality|gender|sexuality|sexual orientation|disability|age|pregnancy|condition|hijab|turban|headscarf|beliefs?))";
+const CONDUCT_PATTERNS: RegExp[] = [
+  // Bullying (not "bullish", "bully pulpit").
+  /(?<!\b(competitors?|rivals?|suppliers?|vendors?|market|they are|landlord)\b[^.!?]{0,30})\b(bully|bullies|bullied|bullying)\b(?!\s+pulpit)(?!\s+(us|them)\s+(on|over|into)\s+(price|pricing|terms|rates|costs?|discounts?)\b)/,
+  // Harassment (not jokey chasing for an invoice / update).
+  /\b(harass|harassed|harasses|harassing|harassment)\b(?![^.!?]*\b(invoices?|payments?|updates?|sign-?offs?|approvals?|repl(y|ies)|responses?|figures|numbers|timesheets?|expenses|status|paperwork|the report)\b)/,
+  /\bsexual(ly)?\s+(harass\w*|comments?|remarks?|advances|jokes?|messages?|innuendo|assault\w*)\b/,
+  /\b(unwanted|inappropriate)\s+(touching|advances|contact|attention|physical\s+contact|sexual\s+\w+)\b/,
+  /\bof\s+a\s+sexual\s+nature\b/,
+  /\b(send|sends|sent|sending)\s+me\s+(sexual|explicit|sexually\s+explicit|inappropriate|nude|dirty)\s+(messages?|texts?|photos?|pictures?|images?|content|jokes?)\b/,
+  /\b(keeps?|kept|repeatedly|keep)\s+(asking|asked)\s+me\s+out\b|\basked\s+me\s+out\b[^.!?]{0,60}\b(said\s+no|refused|turned\s+(him|her|them)\s+down|declined)\b/,
+  /\b(touch(es|ed|ing)?|grop(e|es|ed|ing))\s+me\b(?!\s+base)/,
+  // Discrimination (not "discriminate between", "price discrimination", "discriminating taste").
+  /\bdiscriminat(e|es|ed|ing)\s+against\b/,
+  /\b(being|been|was|were|am|feel|felt|get|got|getting)\s+(\w+\s+)?discriminated\b/,
+  /(?<!price\s)(?<!statistical\s)(?<!price-)\bdiscrimination\b(?!\s+(model|threshold|task|metric|score|between))/,
+  /(?<!anti-)(?<!anti\s)(?<!anti)\b(racis[tm]|racially|sexis[tm]|homophob\w*|transphob\w*|biphob\w*|ableis[tm]|misogyn\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|ageis[tm])\b(?!\s+(training|workshop|policy|module|course|campaign|initiative)\b)/,
+  new RegExp(
+    "\\b(comments?|remarks?|jokes?|joked|joking|names|slurs?|mock(s|ed|ing)?|make fun|made fun|making fun|laugh(s|ed|ing)? at|insult\\w*|digs?|teas(e|es|ed|ing))\\b[^.!?]{0,40}\\b(about|at|of|on)\\s+(my|her|his|their|our)\\s+(race|religion|faith|accent|skin colou?r|skin|ethnicity|nationality|gender|sexuality|sexual orientation|disability|age|pregnancy|hijab|turban|headscarf|weight|beliefs?)\\b"
+  ),
+  new RegExp(
+    "\\b(mock(s|ed|ing)?|make(s)? fun of|made fun of|making fun of|laugh(s|ed|ing)? at|insult(s|ed|ing)?|mimic(s|ked|king)?|imitat(e|es|ed|ing)|copy(ing)?|copies)\\s+(my|her|his|their)\\s+(race|religion|faith|accent|skin colou?r|ethnicity|nationality|gender|sexuality|disability|age|pregnancy|hijab|turban|headscarf|beliefs?|stammer|stutter|condition|wheelchair|hearing|weight|appearance|name|lisp)\\b"
+  ),
+  new RegExp(
+    "\\b(passed over|overlooked|treated (differently|unfairly|worse|badly)|excluded|left out|paid less|denied|refused|fired|sacked|dismissed|demoted|rejected|not promoted|singled out|pushed out|managed out|sidelined|targeted|blocked)\\b[^.!?]{0,60}\\b(because|for being|since|due to)\\s+(of\\s+)?(i am|i was|she is|he is|they are|we are|of)?\\s*(a |an )?" +
+      PROTECTED + "\\b"
+  ),
+  // Identity + mistreatment in the same sentence (not "how do I make sure disabled colleagues aren't excluded").
+  /^(?!.*\bhow\s+(do|can|should|could)\s+(i|we)\s+(make\s+sure|ensure|avoid|stop|prevent|support|include|be|become|help)\b)(?=.*\b(i|me|my|i am)\b).*(\b(black|asian|brown|muslim|jewish|hindu|sikh|gay|lesbian|bisexual|trans|transgender|non-binary|disabled|disability|pregnant|pregnancy|adhd|autism|autistic|dyslexia|dyslexic|neurodivergent|stammer|stutter|religion|faith|ethnicity|race|wheelchair|hijab|menopause|deaf|immigrant)\b[^.!?]{0,90}\b(excluded|left\s+out|passed\s+over|overlooked|sidelined|singled\s+out|targeted|rejected|not\s+a\s+culture\s+fit|treat(ed|ing)\s+(me\s+)?(differently|unfairly|worse|badly)|paid\s+less|demoted|pushed\s+out|managed\s+out|frozen\s+out|ignored|mock(s|ed|ing)?|making\s+fun|make\s+fun|laugh(s|ed|ing)?\s+at|jokes?\s+about|will\s+not\s+let\s+me|would\s+not\s+let\s+me|not\s+allowed\s+to|refuse[ds]?\s+to\s+let\s+me|outing\s+me)\b|\b(excluded|left\s+out|passed\s+over|sidelined|singled\s+out|targeted|rejected|treat(ed|ing)\s+(me\s+)?(differently|unfairly|worse|badly)|paid\s+less|demoted|pushed\s+out|managed\s+out|frozen\s+out)\b[^.!?]{0,90}\b(black|asian|brown|muslim|jewish|hindu|sikh|gay|lesbian|bisexual|trans|transgender|non-binary|disabled|disability|pregnant|pregnancy|adhd|autism|autistic|dyslexia|dyslexic|neurodivergent|stammer|stutter|religion|faith|ethnicity|race|wheelchair|hijab|menopause|deaf|immigrant)\b)/,
+  // Stereotyping remarks about a group.
+  /\b(women|men|mums|mothers|older\s+people|older\s+workers|young\s+people|disabled\s+people|black\s+people|asian\s+people|muslims|jews|gay\s+people|trans\s+people|foreigners|immigrants)\s+(are\s+not|cannot|can\s+not|should\s+not|do\s+not|are\s+too|are\s+never)\b[^.!?]{0,30}\b(suited|good|capable|able|belong|fit|cut\s+out|lead|leaders?|leadership|emotional|reliable|committed|smart|technical)\b/,
+  /\b(too old|too young)\s+(for|to)\b[^.!?]{0,40}\b(role|job|promotion|team|work|here|this|that)\b/,
+  /\b(because of|due to)\s+my\s+(age|race|religion|gender|sexuality|disability|pregnancy|ethnicity|accent|nationality|skin)\b[^.!?]{0,40}\b(pushed out|excluded|treated|passed over|sidelined|paid less|managed out|targeted|denied)\b/,
+  /\b(maternity|paternity|adoption|shared parental)\s+leave\b[^.!?]{0,60}\b(sidelined|demoted|pushed out|excluded|passed over|managed out|lost my|taken off|removed from|treated (differently|unfairly|worse))\b/,
+  /\b(sidelined|demoted|pushed out|excluded|passed over|managed out|taken off|removed from)\b[^.!?]{0,60}\b(since|after)\s+(i\s+)?(came back|coming back|returned|returning)\s+from\s+(maternity|paternity|adoption|shared parental)\s+leave\b/,
+  // Victimisation / retaliation for raising concerns.
+  /\bvictimi[sz](ed|ation|ing|e|es)\b/,
+  /\b(retaliat\w*|punish(ed|ing)|payback|revenge)\b[^.!?]{0,40}\b(for|after)\s+(raising|reporting|complaining|making a complaint|speaking up|whistleblowing|blowing the whistle|filing|my grievance|a grievance|the grievance)\b/,
+  /\b(since|after|ever since)\s+i\s+(raised|reported|complained|filed|made|lodged|submitted)\b[^.!?]{0,40}\b(grievance|complaint|concern|report|it)\b[^.!?]{0,80}\b(excluded|ignored|targeted|punished|sidelined|bad review|worse|demoted|cut out|left out|frozen out|treated|threatened|hostile)\b/,
+  /\b((bad|poor|negative|low|terrible)\s+(review|appraisal|rating|performance\s+review|reference)|excluded|sidelined|demoted|targeted|threatened|frozen\s+out|cut\s+out|moved\s+off|taken\s+off|put\s+on\s+a\s+pip|fired|sacked|dismissed)\b(?=[^.!?]{0,60}\b(right\s+|just\s+|straight\s+|soon\s+)?(after|since)\s+i\s+(reported|raised|complained|flagged|spoke\s+up|blew\s+the\s+whistle|called\s+out|challenged)\b)/,
+  /\b(comment(s|ed|ing)?|remarks?|jokes?)\s+(on|about)\s+my\s+(body|looks|figure|legs|chest|breasts|bum|bottom|appearance)\b/,
+  /\b(a|typical|such\s+a|just\s+a)\s+(woman|women|girl|female|mum|mom|gay|black|muslim)\s+thing\b/,
+  /\b(grab(s|bed|bing)?|shov(e|es|ed|ing)|slap(s|ped|ping)?|kick(s|ed|ing)?|punch(es|ed|ing)?|spat\s+at|spit\s+at|hit|hits|hitting)\s+(me|my\s+(arm|hand|shoulder|face|wrist|body|neck|waist|leg))\b/,
+  /\bpush(es|ed|ing)?\s+me\s+(against|over|out\s+of\s+the\s+way|in\s+the\s+(corridor|hallway|office|kitchen)|into\s+(a|the)\s+(wall|door|desk))\b/,
+  /\b(intimidates|bullies|threatens|humiliates|belittles|terrorises|terrorizes)\s+(the\s+(whole\s+)?team|us|everyone|everybody|people|staff|my\s+team|colleagues|juniors)\b/,
+  /\b(outing|outed|out)\s+me\s+(to|as)\b/,
+  /\b(call(s|ed|ing)?\s+me\s+\w+|treat(s|ed|ing)?\s+me\s+\w+|says?\s+i\s+am\s+\w+|said\s+i\s+was\s+\w+)\b[^.!?]{0,30}\bbecause\s+(i\s+am|i\s+was)\s+(from|a|an)\b/,
+  /\bcalls?\s+me\s+(sweetheart|darling|babe|baby|sweetie|honey|princess|little\s+girl)\b/,
+  /\b(remove|take\s+off|stop\s+wearing|not\s+wear|cannot\s+wear)\s+(my|her|his)\s+(headscarf|hijab|turban|kippah|yarmulke|cross|niqab|religious\s+\w+)\b/,
+  /\b(block(s|ed|ing)?|refus(e|es|ed|ing)|den(y|ies|ied|ying)|stop(s|ped|ping)?)\b[^.!?]{0,30}\b(promotions?|jobs?|roles?|hiring|training)\b[^.!?]{0,20}\b(for\s+)?(people|anyone|staff|women|candidates)\s+(over|above|aged)\s+\d\d\b/,
+  /\b(after|since)\s+my\s+(cancer|diagnosis|illness|disability|surgery|chemo|chemotherapy|stroke|miscarriage|menopause|mental\s+health\s+leave|sick\s+leave)\b[^.!?]{0,60}\b(moved|demoted|sidelined|pushed\s+out|managed\s+out|worse\s+role|excluded|taken\s+off|removed|put\s+on\s+a\s+pip|treated\s+(differently|unfairly|worse))\b/,
+  /\b(messaging|talking|gossiping|bitching|laughing|joking)\s+about\s+me\b(?=[^.!?]*\b(group\s+chat|behind\s+my\s+back|whatsapp|slack|not\s+in|leaving\s+me\s+out|left\s+out))/,
+  /\b(make\s+my\s+life\s+(hell|difficult|a\s+misery)|regret\s+it|lose\s+my\s+job|get\s+rid\s+of\s+me|fire\s+me|sack\s+me|ruin\s+my\s+career)\b[^.!?]{0,40}\bif\s+i\s+(go|went|going|complain|complained|report|reported|speak\s+up|spoke\s+up|raise|raised)\b/,
+  /\bmonkey\s+(noises|sounds|gestures|chants?)\b/,
+  /\b(right\s+|just\s+|straight\s+|soon\s+)?(after|since)\s+i\s+(reported|raised|complained\s+about|flagged|spoke\s+up\s+about|blew\s+the\s+whistle\s+on|called\s+out)\b[^.!?]{0,80}\b(bad|poor|negative|low)\s+(review|appraisal|rating|reference)\b/,
+  // Hostile, abusive or intimidating behaviour aimed at the person.
+  /\b(shout|shouts|shouted|shouting|scream|screams|screamed|screaming|yell|yells|yelled|yelling|swear|swears|swore|swearing)\s+at\s+me\b/,
+  /\b(humiliat|belittl|intimidat|threaten|demean|degrad)\w*\s+me\b/,
+  /\b(picks|picking|picked|ganging|ganged|gangs)\s+(on|up\s+on)\s+me\b/,
+  /\b(spread|spreading|spreads)\s+(rumou?rs|lies|gossip)\s+about\s+me\b/,
+  /\b(verbal(ly)?|emotional(ly)?|physical(ly)?|racial(ly)?|sexual(ly)?)\s+(abuse|abusive|abused|assault\w*)\b/,
+  /\babusive\s+(manager|boss|colleague|co-?worker|team\s?lead|lead|director|supervisor|line manager|client|customer|workplace|behaviou?r)\b/,
+  /\b(abuses|abused|abusing)\s+me\b/,
+  /\bhostile\s+(work|working)\s+environment\b/,
+  /\b(toxic|hostile)\b[^.!?]{0,30}\b(and|,)\s*(abusive|threatening|intimidating|bullying|discriminatory)\b/,
+  // Explicit requests to involve HR / formal channels (includes the "Refer to HR specialist" button text).
+  /\brefer\s+(this|it|the\s+topic|this\s+topic|this\s+issue|this\s+matter|me)\s+to\s+(an?\s+)?(hr|human\s+resources|people\s+team)\b/,
+  /\b(grievance|formal\s+complaint|complaint)\s+against\s+(my\s+|a\s+|the\s+)?(manager|boss|colleague|co-?worker|team\s?lead|director|supervisor|line manager)\b/,
+  /\breport(ing|ed)?\s+(him|her|them|my\s+(manager|boss|colleague|co-?worker|team\s?lead|line manager)|a\s+colleague)\s+(to\s+hr|for\s+(bullying|harassment|discrimination|misconduct))\b/,
+  /\bwhistle-?blow\w*\b|\bblow(ing)?\s+the\s+whistle\b/
+];
+
 // Medical or mental-health needs that a coach should not handle (diagnosis, treatment, therapy).
 const CLINICAL_PATTERNS: RegExp[] = [
   /\bdiagnos(e|is|ed|ing)\s+(me|my|myself|what'?s\s+wrong\s+with\s+me)\b/i,
@@ -96,6 +173,7 @@ const CLINICAL_PATTERNS: RegExp[] = [
 ];
 
 export const BOUNDARY_MARKER = "I'm not a medical or therapy service";
+export const CONDUCT_MARKER = "I can't investigate what happened or give legal advice";
 
 /**
  * Normalise a message before matching: lower case, straight quotes, collapsed spaces,
@@ -139,6 +217,7 @@ export const detectBoundary = (text: string): BoundaryKind | null => {
   const normalised = normaliseForBoundary(raw);
   const variants = [light, normalised];
   if (RISK_PATTERNS.some((pattern) => variants.some((value) => pattern.test(value)))) return "risk";
+  if (CONDUCT_PATTERNS.some((pattern) => variants.some((value) => pattern.test(value)))) return "conduct";
   if (CLINICAL_PATTERNS.some((pattern) => variants.some((value) => pattern.test(value)))) return "clinical";
   return null;
 };
@@ -157,6 +236,25 @@ export const RISK_REPLY = [
   "",
   "I'm here for work-related coaching whenever you feel ready. Is there someone you can contact right now?"
 ].join("\n");
+
+export const CONDUCT_REPLY = [
+  "Thank you for telling me. Nobody should be treated that way at work, and it's right to take it seriously.",
+  "",
+  "This is something your organisation needs to know about and has a duty to look into, so rather than working through it in coaching alone, I'd recommend raising it with:",
+  "",
+  "- **HR (or your People team)**, who can explain your options, from an informal resolution to a formal grievance.",
+  "- **A manager you trust**. If the issue involves your own manager, go to their manager or another senior leader.",
+  "- **Your company's speak-up or whistleblowing line**, if you'd prefer to raise it confidentially.",
+  "- **Acas** (UK): free, impartial advice on **0300 123 1100** or at acas.org.uk.",
+  "",
+  "It can help to keep a simple record of what happened: dates, what was said or done, who was there, and how it affected you. If it's affecting your health or wellbeing, your GP or Employee Assistance Programme can support you too.",
+  "",
+  `${CONDUCT_MARKER}, but I can help you prepare for that conversation, for example what you want to say and what outcome you're hoping for. Would that help?`
+].join("\n");
+
+// "Yes, help me prepare for the HR conversation" after a referral: let the coach help them prepare.
+const CONDUCT_PREP_PATTERN =
+  /\b(prepare|preparing|prep|talking points|what (should|do|would|can) i say|how (should|do|can) i (say|raise|bring|approach|word|start)|draft|write|plan (for|the|my)|role-?play|practi[sc]e)\b/;
 
 export const CLINICAL_REPLY = [
   "Thank you for sharing that. It sounds like a lot to carry, and it's important you get the right support.",
@@ -183,6 +281,13 @@ export const getBoundaryReply = (
 ): { kind: BoundaryKind; text: string } | null => {
   const kind = detectBoundary(latestUserMessage);
   if (kind === "risk") return { kind, text: RISK_REPLY };
+  if (kind === "conduct") {
+    // Every new report gets the referral. Once referred, a request to prepare for the HR conversation
+    // goes to the coach (the prompt rule below keeps it to preparation, not investigation or legal advice).
+    const alreadyReferred = previousAssistantMessages.some((message) => message.includes(CONDUCT_MARKER));
+    if (alreadyReferred && CONDUCT_PREP_PATTERN.test(normaliseForBoundary(latestUserMessage))) return null;
+    return { kind, text: CONDUCT_REPLY };
+  }
   if (kind === "clinical") {
     const alreadySignposted = previousAssistantMessages.some((message) => message.includes(BOUNDARY_MARKER));
     return alreadySignposted ? null : { kind, text: CLINICAL_REPLY };
@@ -192,6 +297,8 @@ export const getBoundaryReply = (
 
 /** Backstop rule for the AI prompt (covers wording the patterns above don't catch). */
 export const BOUNDARY_SYSTEM_RULES = [
+  "Conduct boundary: if the coachee reports bullying, harassment, sexual harassment, discrimination (including on race, religion, sex, gender, sexuality, disability, age, pregnancy or maternity), victimisation for raising a concern, or abusive or intimidating behaviour at work, do not coach them to cope with it or work around it. Acknowledge them calmly, say this needs HR or a manager they trust (or their manager's manager), mention their company's speak-up or whistleblowing line and, in the UK, Acas (0300 123 1100), and offer to help them prepare for that conversation.",
+  "When helping them prepare, help them organise the facts (dates, what happened, who was there, impact), what they want to say and the outcome they hope for. Do not investigate, judge who is right, or give legal advice. Ordinary tough feedback, blunt managers, or phrases like 'bullish forecast' or 'discriminate between options' are not conduct issues.",
   "Safety boundary: you are a workplace coach, not a medical, therapy or crisis service.",
   "If the coachee raises physical or mental health symptoms, asks for a diagnosis, treatment, medication or therapy, briefly acknowledge it, say you are not a medical or therapy service, and signpost their GP, NHS 111, or their Employee Assistance Programme; then offer to continue with the work-related side only if appropriate.",
   "If there is any mention or hint of suicide, self-harm or risk to life, do not continue coaching: say you are not a crisis service, urge them to call 999 or go to A&E if in immediate danger, and give Samaritans 116 123 (free, 24/7) and NHS 111.",

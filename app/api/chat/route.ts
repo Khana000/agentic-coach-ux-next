@@ -1023,7 +1023,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing chat messages." }, { status: 400 });
   }
 
-  // Safety boundary first: medical, therapy or self-harm topics get fixed signposting text,
+  // Safety boundary first: self-harm, workplace conduct (HR referral) and medical/therapy topics get fixed text,
   // before any coaching flow (plan, manager, end-session) or the AI model runs.
   const boundaryReply = getBoundaryReply(
     [...trimmedMessages].reverse().find((message) => message.role === "user")?.content ?? "",
@@ -1311,7 +1311,7 @@ export async function POST(request: Request) {
     "Never name or explain internal frameworks in the reply (Heron, GROW, Gestalt, DISC, SDI). Keep output natural and coach-like.",
     "Do not include laughter tokens like 'ha ha', 'haha', or 'lol'.",
     "If the user reports bullying, harassment, discrimination, or other code-of-conduct issues,",
-    "stop coaching on the topic and recommend contacting HR or the appropriate reporting channel.",
+    "do not coach them to work around it: recommend HR, a trusted manager or the speak-up line, and offer to help them prepare for that conversation.",
     ...BOUNDARY_SYSTEM_RULES,
     `PlanMode: ${planRequested ? "requested" : "not_requested"}`,
     `ManagerSupportMode: ${managerSupportRequested ? "requested" : "not_requested"}`,

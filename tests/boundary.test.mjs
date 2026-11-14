@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   BOUNDARY_MARKER,
   CLINICAL_REPLY,
+  CONDUCT_MARKER,
+  CONDUCT_REPLY,
   RISK_REPLY,
   detectBoundary,
   getBoundaryReply,
@@ -165,4 +167,112 @@ test("normalisation handles case, curly apostrophes and contractions", () => {
   assert.equal(normaliseForBoundary("I\u2019m  FINE, I can\u2019t, won't, wasn't"), "i am fine, i cannot, will not, was not");
   assert.equal(normaliseForBoundary("im ok, dont worry, cant stop, ive got it"), "i am ok, do not worry, cannot stop, i have got it");
   assert.equal(normaliseForBoundary("Everyone\u2019d be fine"), "everyone would be fine");
+});
+
+// Workplace bullying, harassment, discrimination, victimisation: must be referred to HR every time.
+const CONDUCT = [
+  "I am being bullied by a colleague and my manager ignores it. What should I do?",
+  "My manager keeps making racist comments about me in meetings.",
+  "A senior colleague keeps touching me and making sexual comments.",
+  "I think I'm being discriminated against because I'm pregnant.",
+  "I was passed over for promotion because I'm a woman.",
+  "They make jokes about my accent every single day.",
+  "Since I raised a grievance my manager has excluded me from every meeting.",
+  "My boss shouts at me in front of the whole team.",
+  "I\u2019m being harassed by someone in another department.",
+  "There's a lot of sexism in my team and nobody does anything.",
+  "My team lead is verbally abusive.",
+  "Since coming back from maternity leave I've been sidelined.",
+  "I'm being victimised for whistleblowing.",
+  "A coworker made homophobic remarks about me.",
+  "My manager mocks my disability.",
+  "Please refer this topic to an HR specialist.",
+  "It's a hostile work environment and they gang up on me.",
+  "I keep getting told I'm too old for this role and they're pushing me out.",
+  "MY LINE MANAGER BELITTLES ME IN EVERY 1:1",
+  "Colleagues have been spreading rumours about me since I came out as gay.",
+  "I'm the only Black person on the team and I keep getting left out of client work.",
+  "He keeps sending me messages of a sexual nature.",
+  "I got a bad review right after I reported my manager for fiddling expenses.",
+  "My colleague makes fun of my stammer.",
+  "Since I told them I have ADHD my manager has been treating me differently.",
+  "My manager says women aren't suited to leadership.",
+  "A director asked me out repeatedly and I said no, now he's hostile.",
+  "My manager keeps commenting on my body and it makes me uncomfortable.",
+  "My colleague grabbed my arm and pushed me in the corridor.",
+  "I'm gay and my manager keeps outing me to clients.",
+  "Because I'm in a wheelchair they won't let me join site visits.",
+  "My manager calls me lazy because I'm from Poland.",
+  "My colleague rolls his eyes and calls me sweetheart in meetings.",
+  "I was told to remove my headscarf for client meetings.",
+  "After my cancer diagnosis I was moved to a worse role.",
+  "My manager said she'd make my life hell if I went to HR.",
+  "Someone keeps making monkey noises when I walk past."
+];
+
+// Work phrases that must NOT trigger an HR referral.
+const CONDUCT_NEGATIVES = [
+  "Our sales forecast is bullish for Q3.",
+  "Help me discriminate between these two options.",
+  "I'll harass the vendor for the invoice again, ha.",
+  "The client keeps harassing us for an update on the project.",
+  "My manager is tough and gives very blunt feedback. How do I respond well?",
+  "How do I give feedback to a manager who micromanages?",
+  "We're running anti-racism training next month. How do I get buy-in?",
+  "The model needs to discriminate between spam and real leads.",
+  "We're reviewing price discrimination in our pricing strategy.",
+  "I need to speak to HR about my parental leave dates.",
+  "How do I prepare for a difficult conversation with my boss about pay?",
+  "My boss shouted across the office to get everyone over for cake.",
+  "Our design team has a discriminating eye for quality.",
+  "I'm a bit of a bull in a china shop in meetings.",
+  "How do I handle a colleague who keeps interrupting me?",
+  "My manager pushes hard on deadlines and I find it stressful.",
+  "I want to raise my profile with senior leaders.",
+  "We need to stop the loudest voices bulldozing quieter colleagues.",
+  "Can you help me plan my return from maternity leave next month?",
+  "My manager challenged my proposal hard in the meeting.",
+  "Our competitor is bullying us on price.",
+  "I got a bad review and want to improve.",
+  "How can we make sure Muslim colleagues aren't excluded from team socials during Ramadan?",
+  "I have ADHD and want tips on focus at work.",
+  "I was passed over for promotion and want feedback on how to improve.",
+  "I'm the only woman on the board and want to build influence.",
+  "My manager pushes me to do better work and I appreciate it.",
+  "I feel intimidated presenting to the CEO. How do I build confidence?",
+  "My boss is moody on Mondays.",
+  "Our client is aggressive in negotiations.",
+  "Help me prepare for an HR policy presentation.",
+  "My manager rejected my holiday request for the launch week.",
+  "I was moved to a new role after the restructure."
+];
+
+test("workplace conduct issues are detected as conduct", () => {
+  for (const text of CONDUCT) assert.equal(detectBoundary(text), "conduct", text);
+});
+test("work phrases are not flagged as conduct (or any boundary)", () => {
+  for (const text of CONDUCT_NEGATIVES) assert.equal(detectBoundary(text), null, text);
+});
+test("conduct reply refers to HR, a trusted manager, speak-up line and Acas, offers to help prepare", () => {
+  for (const needle of ["HR", "manager you trust", "speak-up or whistleblowing line", "Acas", "0300 123 1100", "prepare for that conversation", CONDUCT_MARKER]) {
+    assert.ok(CONDUCT_REPLY.includes(needle), needle);
+  }
+  assert.ok(!/988|741741|\blawyer\b|solicitor|you should sue/i.test(CONDUCT_REPLY));
+});
+test("conduct referral is given for every new report, even after an earlier referral", () => {
+  assert.equal(getBoundaryReply(CONDUCT[0], [])?.kind, "conduct");
+  assert.equal(getBoundaryReply(CONDUCT[1], [CONDUCT_REPLY])?.kind, "conduct");
+});
+test("after a referral, a request to prepare for the HR conversation goes to the coach", () => {
+  assert.equal(getBoundaryReply("Yes please, help me prepare what to say to HR about the bullying.", [CONDUCT_REPLY]), null);
+  assert.equal(getBoundaryReply("Yes please, help me prepare what to say to HR about the bullying.", [])?.kind, "conduct");
+});
+test("crisis risk takes priority over a conduct issue in the same message", () => {
+  assert.equal(detectBoundary("I'm being bullied so badly at work that I want to end my life."), "risk");
+  assert.equal(detectBoundary("The harassment is so bad that everyone would be better off without me."), "risk");
+  assert.equal(getBoundaryReply("My manager bullies me and I've been thinking about hurting myself.", [CONDUCT_REPLY])?.kind, "risk");
+});
+test("conduct takes priority over clinical, and its reply still signposts GP / EAP", () => {
+  assert.equal(detectBoundary("The bullying from my manager is giving me panic attacks."), "conduct");
+  assert.ok(CONDUCT_REPLY.includes("GP") && CONDUCT_REPLY.includes("Employee Assistance Programme"));
 });
