@@ -14,6 +14,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
+import { isSafetyKind, isSafetyReplyMessage, type SafetyKind } from "../lib/safety-reply";
 
 type AppScreen = "cover" | "access" | "welcome" | "session";
 type CoachGender = "male" | "female";
@@ -25,6 +26,9 @@ type CalendarAgreement = "pending" | "agreed" | "skip";
 type ChatMessage = {
   role: ChatRole;
   content: string;
+  // Set when the chat API returned a fixed safety reply (crisis, HR referral or medical boundary).
+  // Safety replies are excluded from Action Hub import and transcript action extraction.
+  safety?: SafetyKind;
 };
 
 type TrialStatus = {
@@ -749,8 +753,10 @@ export default function HomePage() {
   const awaitingEndSessionApprovalRef = useRef(false);
 
 
+  // Latest coaching reply (safety replies are not coaching content, so they never become the plan summary).
   const lastAssistantMessage =
-    [...chatMessages].reverse().find((message) => message.role === "assistant")?.content ?? "";
+    [...chatMessages].reverse().find((message) => message.role === "assistant" && !isSafetyReplyMessage(message))
+      ?.content ?? "";
 
   const reminderItemsSorted = useMemo(
     () => [...reminders].sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
@@ -760,7 +766,8 @@ export default function HomePage() {
     const collected: string[] = [];
 
     chatMessages.forEach((message) => {
-      if (message.role !== "assistant") {
+      // Skip user turns and safety replies: helplines, HR and GP signposting are not coaching actions.
+      if (message.role !== "assistant" || isSafetyReplyMessage(message)) {
         return;
       }
 
@@ -1304,13 +1311,13 @@ export default function HomePage() {
 
   useEffect(() => {
     const lastMessage = chatMessages[chatMessages.length - 1];
-    if (lastMessage?.role !== "assistant") {
+    if (lastMessage?.role !== "assistant" || isSafetyReplyMessage(lastMessage)) {
       return;
     }
 
     const recentAssistantWindow = [...chatMessages]
       .reverse()
-      .filter((message) => message.role === "assistant")
+      .filter((message) => message.role === "assistant" && !isSafetyReplyMessage(message))
       .slice(0, 4)
       .reverse()
       .map((message) => message.content)
@@ -1416,7 +1423,7 @@ export default function HomePage() {
     const recentAssistantWindow = [...chatMessages]
       .slice(0, -1)
       .reverse()
-      .filter((message) => message.role === "assistant")
+      .filter((message) => message.role === "assistant" && !isSafetyReplyMessage(message))
       .slice(0, 6)
       .reverse()
       .map((message) => message.content)
@@ -2558,7 +2565,8 @@ export default function HomePage() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          messages: nextMessages,
+          // Send only role + content (the UI-only safety flag is not part of the chat API contract).
+          messages: nextMessages.map(({ role, content }) => ({ role, content })),
           context: conversationContext,
           coachGender,
           style: "balanced"
@@ -2570,6 +2578,7 @@ export default function HomePage() {
         endSession?: boolean;
         error?: string;
         toolCalls?: unknown;
+        boundary?: unknown;
       };
 
       if (!response.ok) {
@@ -2583,7 +2592,11 @@ export default function HomePage() {
       const mergedToolCalls = [...responseToolCalls, ...toolEnvelope.toolCalls];
 
       if (assistantText) {
-        const updatedMessages = [...nextMessages, { role: "assistant" as const, content: assistantText }];
+        const safety = isSafetyKind(data?.boundary) ? data.boundary : undefined;
+        const assistantMessage: ChatMessage = safety
+          ? { role: "assistant", content: assistantText, safety }
+          : { role: "assistant", content: assistantText };
+        const updatedMessages = [...nextMessages, assistantMessage];
         setChatMessages(updatedMessages);
         chatMessagesRef.current = updatedMessages;
       }

@@ -8,7 +8,10 @@ const DB_NAME = process.env.MONGO_DB_NAME ?? "coaching";
 type SessionMessage = {
   role: "user" | "assistant";
   content: string;
+  safety?: "risk" | "conduct" | "clinical";
 };
+
+const SAFETY_KINDS = new Set(["risk", "conduct", "clinical"]);
 
 type SessionSummary = {
   bullets?: string[];
@@ -44,10 +47,15 @@ const sanitizeMessages = (raw: unknown): SessionMessage[] => {
         (message as SessionMessage).role !== undefined &&
         (message as SessionMessage).content !== undefined
     )
-    .map((message) => ({
-      role: (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
-      content: String(message.content ?? "").trim()
-    }))
+    .map((message) => {
+      const role = (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant";
+      const content = String(message.content ?? "").trim();
+      // Keep the safety-reply flag (crisis / HR / medical) so restored sessions still exclude those replies
+      // from action extraction. Only the three known values are stored.
+      return role === "assistant" && SAFETY_KINDS.has(String(message.safety))
+        ? { role, content, safety: message.safety }
+        : { role, content };
+    })
     .filter((message) => message.content.length > 0);
 };
 

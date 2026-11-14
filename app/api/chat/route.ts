@@ -1015,9 +1015,11 @@ export async function POST(request: Request) {
     (message) => message.content && message.content.trim()
   );
 
+  // Pass only role + content upstream (clients may attach UI-only fields such as a safety flag).
   const trimmedMessages = allMessages
     .filter((message) => message.content && message.content.trim())
-    .slice(-8);
+    .slice(-8)
+    .map((message) => ({ role: message.role, content: message.content }));
 
   if (trimmedMessages.length === 0) {
     return NextResponse.json({ error: "Missing chat messages." }, { status: 400 });
