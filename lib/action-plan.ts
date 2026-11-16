@@ -283,6 +283,121 @@ export const extractPlanItemsFromPlanText = (text: string, today: string): PlanI
   return normalisePlanItems(bullets, today);
 };
 
+
+// ---------- stated schedules ----------
+
+/**
+ * Phrases the coachee (or a plan) may use, longest-first so "next Friday" wins over "Friday"
+ * and "within the next 24 hours" wins over a shorter span.
+ */
+const STATED_DATE_PATTERN = new RegExp(
+  [
+    "\\d{4}-\\d{2}-\\d{2}",
+    "day after tomorrow",
+    `(?:(?:within|in|over)(?: the next)?|(?:the )?next) ${NUM_RE}\\s+(?:hours?|hrs?|days?|weeks?|months?)`,
+    "(?:within|in) (?:a|one) fortnight|\\bfortnight\\b",
+    "(?:within|in|over) the next (?:week|month)",
+    "(?:within|in|over) the next (?:few|couple of) days|next few days",
+    `next ${WEEKDAY_RE}`,
+    "end of next week",
+    "end of (?:the |this )?week|this week|by the weekend|end of the working week",
+    "next week",
+    "end of next month",
+    "end of (?:the |this )?month|this month",
+    "next month",
+    "tomorrow|tmrw|today|tonight|this (?:morning|afternoon|evening)|end of (?:the )?day|\\beod\\b",
+    `\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MONTH_RE}(?:\\s+\\d{4})?`,
+    `${MONTH_RE}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:\\s+\\d{4})?`,
+    "\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?",
+    `(?:(?:by|on|this|before|until|till|coming) )?${WEEKDAY_RE}`
+  ].join("|"),
+  "gi"
+);
+
+export type StatedDate = { phrase: string; dueDate: string };
+
+/** Left-to-right date phrases in `text`, each resolved against `today` with resolveDueDate. */
+export const extractDatePhrases = (text: string, today: string): StatedDate[] => {
+  if (!text || !isIsoDate(today)) return [];
+  const found: StatedDate[] = [];
+  const source = String(text);
+  const pattern = new RegExp(STATED_DATE_PATTERN.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    const phrase = match[0].replace(/\s+/g, " ").trim();
+    const dueDate = resolveDueDate(phrase, today);
+    if (!dueDate) continue;
+    found.push({ phrase, dueDate });
+  }
+  return found;
+};
+
+/**
+ * If a recent user message lists two or more dates (for example "tomorrow, within the next 24 hours,
+ * and next Friday"), return those phrases in the order the coachee said them.
+ */
+export const extractStatedSchedule = (
+  messages: Array<{ role?: string; content?: string }>,
+  today: string
+): StatedDate[] => {
+  const userTexts = (messages ?? [])
+    .filter((message) => message?.role === "user" && typeof message.content === "string" && message.content.trim())
+    .map((message) => message.content as string);
+  for (let index = userTexts.length - 1; index >= 0; index -= 1) {
+    const phrases = extractDatePhrases(userTexts[index], today);
+    if (phrases.length >= 2) return phrases;
+  }
+  return [];
+};
+
+/** Assign a stated schedule to plan items in order, overwriting model-invented calendar dates. */
+export const applyStatedSchedule = (items: PlanItem[], stated: StatedDate[]): PlanItem[] => {
+  if (!Array.isArray(items) || stated.length === 0) return items;
+  return items.map((item, index) => {
+    const fromList = stated[index];
+    if (!fromList) return item;
+    return { ...item, dueDate: fromList.dueDate, dateText: fromList.phrase };
+  });
+};
+
+/** Short due-date label used in plan markdown, e.g. "Fri 27 Nov". */
+export const formatPlanDueShort = (iso: string): string => {
+  if (!isIsoDate(iso)) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC"
+  }).format(new Date(utcMsFromIso(iso)));
+};
+
+/** Rewrite "due:" wording in the plan text so it matches the structured (corrected) dates. */
+export const rewritePlanTextDates = (planText: string, items: PlanItem[]): string => {
+  if (!planText || items.length === 0) return planText;
+  const used = new Set<number>();
+  return String(planText)
+    .split("\n")
+    .map((line) => {
+      const index = items.findIndex((item, itemIndex) => {
+        if (used.has(itemIndex) || !item.dueDate) return false;
+        const probe = item.activity.toLowerCase().slice(0, 32);
+        return probe.length >= 8 && line.toLowerCase().includes(probe);
+      });
+      if (index < 0) return line;
+      used.add(index);
+      const label = formatPlanDueShort(items[index].dueDate as string);
+      if (!label) return line;
+      if (/(timeline|due|by when|deadline|when)\s*:/i.test(line)) {
+        return line.replace(/(timeline|due|by when|deadline|when)\s*:\s*.+$/i, `due: ${label}`);
+      }
+      if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
+        return `${line.replace(/[.,;:\s]+$/, "")}, due: ${label}`;
+      }
+      return line;
+    })
+    .join("\n");
+};
+
 // ---------- display ----------
 
 export const formatDueDate = (iso: string | null): string => {

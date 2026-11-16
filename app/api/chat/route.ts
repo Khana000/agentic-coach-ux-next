@@ -5,10 +5,14 @@ import { errorPayload, parseChatMessages, readJsonBody, successOf } from "../../
 import { looksLikeSafetyReply } from "../../../lib/safety-reply";
 import {
   addDays,
+  applyStatedSchedule,
   extractPlanItemsFromPlanText,
+  extractStatedSchedule,
+  formatPlanDueShort,
   londonToday,
   normalisePlanItems,
   resolveDueDate,
+  rewritePlanTextDates,
   type PlanItem
 } from "../../../lib/action-plan";
 
@@ -1076,7 +1080,9 @@ const buildStructuredPlan = async (options: {
             const textDate = resolveDueDate(wording, today);
             if (textDate) item.dueDate = textDate;
           });
-          return { items, today, source: "model-json" };
+          // Coachee-stated relative dates (tomorrow / next Friday) win over calendar dates the model invented.
+          const stated = extractStatedSchedule(messages, today);
+          return { items: applyStatedSchedule(items, stated), today, source: "model-json" };
         }
       } else {
         console.error(`[chat] plan JSON request failed: ${response.status}`);
@@ -1088,7 +1094,7 @@ const buildStructuredPlan = async (options: {
     }
   }
 
-  const items = extractPlanItemsFromPlanText(planText, today);
+  const items = applyStatedSchedule(extractPlanItemsFromPlanText(planText, today), extractStatedSchedule(messages, today));
   return items.length > 0 ? { items, today, source: "plan-text" } : null;
 };
 
@@ -1425,7 +1431,7 @@ export async function POST(request: Request) {
       ? "- Exactly 3 action bullets only, each one line and behavior-specific."
       : "Keep guidance practical and behavior-focused.",
     planRequested
-      ? `- Each bullet: the action, then ", due: <day>" as a specific date (for example "due: Fri 20 Nov"), plus a time only if the coachee gave one. Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Use dates the coachee stated; otherwise propose realistic dates within the next two weeks.`
+      ? `- Each bullet: the action, then ", due: <day>". If the coachee gave relative dates (for example "tomorrow", "within the next 24 hours", "next Friday"), copy that wording exactly into due: and use each stated date once, in the order they gave it. Do not convert those phrases to a calendar date yourself. Only if they did not give dates, propose realistic dates within the next two weeks using the calendar (for example "due: ${formatPlanDueShort(resolveDueDate("next Friday", todayLondon) ?? todayLondon)}"). Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Add a time only if the coachee gave one.`
       : "Avoid filler and avoid repeating the same framework names.",
     planRequested
       ? "- Base the actions on what the coachee said they would do in this conversation. Summarise their own commitments; do not invent unrelated topics. Never include crisis, medical or HR-referral signposting as actions."
@@ -1487,7 +1493,7 @@ export async function POST(request: Request) {
     "## Reflection",
     "1 short paragraph on what the coachee wants to change.",
     "## Focus Plan",
-    `- Exactly 3 action bullets, each one line: the action, then ", due: <day>" as a specific date (for example "due: Fri 20 Nov"). Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Use dates the coachee stated; otherwise propose realistic dates within the next two weeks. Add a time only if the coachee gave one.`,
+    `- Exactly 3 action bullets, each one line: the action, then ", due: <day>". If the coachee gave relative dates (for example "tomorrow", "within the next 24 hours", "next Friday"), copy that wording exactly into due: and use each stated date once, in the order they gave it. Do not convert those phrases to a calendar date yourself. Only if they did not give dates, propose realistic dates within the next two weeks using the calendar (for example "due: ${formatPlanDueShort(resolveDueDate("next Friday", todayLondon) ?? todayLondon)}"). Today is ${todayLondonLabel} (Europe/London). Calendar: ${buildDateTable(todayLondon, 15)}. Add a time only if the coachee gave one.`,
     "- Base the actions on what the coachee said in this conversation. Never include crisis, medical or HR-referral signposting as actions.",
     "## First Step",
     "- One sentence for what to do in the next 24 hours.",
@@ -1722,6 +1728,9 @@ export async function POST(request: Request) {
     planRequested && !hasEndSessionTool
       ? await buildStructuredPlan({ openaiKey, model, planText: cleanText, messages: allMessages, today: todayLondon })
       : null;
+  if (plan?.items?.length) {
+    cleanText = rewritePlanTextDates(cleanText, plan.items);
+  }
 
   return NextResponse.json({
     text: cleanText,

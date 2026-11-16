@@ -5,7 +5,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPlanIcs,
+  applyStatedSchedule,
+  extractDatePhrases,
   extractPlanItemsFromPlanText,
+  extractStatedSchedule,
+  formatPlanDueShort,
   googleCalendarUrl,
   isRecipientAllowed,
   isSafetySignpostingText,
@@ -14,7 +18,8 @@ import {
   normalisePlanItems,
   parseDurationMinutes,
   parseTimeOfDay,
-  resolveDueDate
+  resolveDueDate,
+  rewritePlanTextDates
 } from "../lib/action-plan.ts";
 import { CLINICAL_REPLY, CONDUCT_REPLY, RISK_REPLY } from "../lib/server/boundary.ts";
 
@@ -49,6 +54,78 @@ test("relative dates resolve against a Monday (next Friday = Friday of next week
   assert.equal(resolveDueDate("end of the week", MON), "2026-11-20");
   assert.equal(resolveDueDate("next week", MON), "2026-11-23");
   assert.equal(resolveDueDate("Monday", MON), MON);
+});
+
+
+test("on Monday, a listed schedule keeps tomorrow, within 24 hours and next Friday", () => {
+  const request =
+    "Please create an action plan with three actions, a first step and dates: tomorrow, within the next 24 hours, and next Friday.";
+  assert.deepEqual(
+    extractDatePhrases(request, MON).map((item) => [item.phrase, item.dueDate]),
+    [
+      ["tomorrow", "2026-11-17"],
+      ["within the next 24 hours", "2026-11-17"],
+      ["next Friday", "2026-11-27"]
+    ]
+  );
+
+  // The live f99703f failure: the model wrote "Fri 20 Nov" (this Friday) instead of next Friday.
+  const livePlanText = [
+    "## Reflection",
+    "You want to ensure clarity in your presentations to senior leaders.",
+    "",
+    "## Focus Plan",
+    "- Identify the key message and next step for your upcoming presentation, due: Tue 17 Nov.",
+    "- Create a concise outline that highlights the main point and supporting details, due: Fri 20 Nov.",
+    "- Practice delivering your presentation with a focus on the key next step, due: Fri 20 Nov.",
+    "",
+    "## First Step",
+    "- Spend 30 minutes tomorrow identifying the key message and next step for your presentation."
+  ].join("\n");
+  const modelItems = normalisePlanItems(
+    [
+      { activity: "Identify the key message and next step for your upcoming presentation", dateText: "Tue 17 Nov", dueDate: "2026-11-17" },
+      { activity: "Create a concise outline that highlights the main point and supporting details", dateText: "Fri 20 Nov", dueDate: "2026-11-20" },
+      { activity: "Practice delivering your presentation with a focus on the key next step", dateText: "Fri 20 Nov", dueDate: "2026-11-20" }
+    ],
+    MON
+  );
+  assert.deepEqual(modelItems.map((item) => item.dueDate), ["2026-11-17", "2026-11-20", "2026-11-20"]);
+
+  const stated = extractStatedSchedule(
+    [
+      { role: "user", content: "I want to be clearer in presentations to senior leaders." },
+      { role: "user", content: request }
+    ],
+    MON
+  );
+  const corrected = applyStatedSchedule(modelItems, stated);
+  assert.deepEqual(
+    corrected.map((item) => [item.dueDate, item.dateText]),
+    [
+      ["2026-11-17", "tomorrow"],
+      ["2026-11-17", "within the next 24 hours"],
+      ["2026-11-27", "next Friday"]
+    ]
+  );
+
+  const rewritten = rewritePlanTextDates(livePlanText, corrected);
+  assert.match(rewritten, /due: Tue 17 Nov/);
+  assert.match(rewritten, /supporting details, due: Tue 17 Nov/);
+  assert.match(rewritten, /key next step, due: Fri 27 Nov/);
+  assert.doesNotMatch(rewritten, /due: Fri 20 Nov/);
+  assert.equal(formatPlanDueShort("2026-11-27"), "Fri 27 Nov");
+});
+
+test("a single relative date in earlier chat is not treated as a three-action schedule", () => {
+  const stated = extractStatedSchedule(
+    [
+      { role: "user", content: "I could do the 1:1 next Friday." },
+      { role: "user", content: "Yes, please create the plan." }
+    ],
+    MON
+  );
+  assert.deepEqual(stated, []);
 });
 
 test("unreadable or invalid dates give null", () => {
