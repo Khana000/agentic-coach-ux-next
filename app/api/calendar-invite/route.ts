@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
 import { buildPlanIcs, isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
+import { asOptionalString, errorPayload, readJsonBody, successOf } from "../../../lib/server/request-validation";
 
 type CalendarInviteRequest = {
   toEmail?: string;
@@ -31,17 +32,32 @@ export async function POST(request: Request) {
     return access.response;
   }
 
-  let payload: CalendarInviteRequest;
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
+  }
+  const payload = successOf(parsed).value as CalendarInviteRequest;
 
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const toEmailField = asOptionalString(payload.toEmail, "toEmail", 254);
+  const toEmailFieldError = errorPayload(toEmailField);
+  if (toEmailFieldError) {
+    return NextResponse.json({ error: toEmailFieldError.error }, { status: toEmailFieldError.status });
+  }
+  const actionTextField = asOptionalString(payload.actionText, "actionText", 300);
+  const actionTextFieldError = errorPayload(actionTextField);
+  if (actionTextFieldError) {
+    return NextResponse.json({ error: actionTextFieldError.error }, { status: actionTextFieldError.status });
+  }
+  const coacheeNameField = asOptionalString(payload.coacheeName, "coacheeName", 100);
+  const coacheeNameFieldError = errorPayload(coacheeNameField);
+  if (coacheeNameFieldError) {
+    return NextResponse.json({ error: coacheeNameFieldError.error }, { status: coacheeNameFieldError.status });
   }
 
-  const toEmail = payload.toEmail?.trim();
-  const actionText = payload.actionText?.trim();
-  const coacheeName = payload.coacheeName?.trim() || "Coachee";
+  const toEmail = successOf(toEmailField).value?.trim();
+  const actionText = successOf(actionTextField).value?.trim();
+  const coacheeName = successOf(coacheeNameField).value?.trim() || "Coachee";
   const resendApiKey = process.env.RESEND_API_KEY;
   const fromEmail = process.env.CALENDAR_FROM_EMAIL;
 

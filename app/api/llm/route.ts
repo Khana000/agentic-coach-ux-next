@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
+import { errorPayload, parsePrompt, readJsonBody, successOf } from "../../../lib/server/request-validation";
 
 type LlmRequest = {
   prompt?: string;
@@ -21,16 +22,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing OPENAI_API_KEY." }, { status: 500 });
   }
 
-  let payload: LlmRequest;
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
+  }
+  const parsedPrompt = parsePrompt(successOf(parsed).value.prompt);
+  const parsedPromptError = errorPayload(parsedPrompt);
+  if (parsedPromptError) {
+    return NextResponse.json({ error: parsedPromptError.error }, { status: parsedPromptError.status });
   }
 
-  if (!payload.prompt || !payload.prompt.trim()) {
-    return NextResponse.json({ error: "Missing prompt text." }, { status: 400 });
-  }
+  const payload = successOf(parsed).value as LlmRequest;
+  payload.prompt = successOf(parsedPrompt).prompt;
 
   const systemPrompt = [
     "You are an executive coaching assistant using Heron and Gestalt guidance.",

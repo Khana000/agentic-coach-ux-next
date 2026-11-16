@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
 import { BOUNDARY_SYSTEM_RULES, detectBoundary, getBoundaryReply } from "../../../lib/server/boundary";
+import { errorPayload, parseChatMessages, readJsonBody, successOf } from "../../../lib/server/request-validation";
 import { looksLikeSafetyReply } from "../../../lib/safety-reply";
 import {
   addDays,
@@ -1121,26 +1122,23 @@ export async function POST(request: Request) {
   const antigravKey = process.env.ANTIGRAVITY_API_KEY;
   const antigravEndpoint = process.env.ANTIGRAVITY_ENDPOINT ?? "https://api.antigravity.com/v1/chat";
 
-  let payload: ChatRequest;
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
   }
 
-  const allMessages = (payload.messages ?? []).filter(
-    (message) => message.content && message.content.trim()
-  );
+  const parsedMessages = parseChatMessages(successOf(parsed).value.messages);
+  const parsedMessagesError = errorPayload(parsedMessages);
+  if (parsedMessagesError) {
+    return NextResponse.json({ error: parsedMessagesError.error }, { status: parsedMessagesError.status });
+  }
+
+  const payload = successOf(parsed).value as ChatRequest;
+  const allMessages = successOf(parsedMessages).messages;
 
   // Pass only role + content upstream (clients may attach UI-only fields such as a safety flag).
-  const trimmedMessages = allMessages
-    .filter((message) => message.content && message.content.trim())
-    .slice(-8)
-    .map((message) => ({ role: message.role, content: message.content }));
-
-  if (trimmedMessages.length === 0) {
-    return NextResponse.json({ error: "Missing chat messages." }, { status: 400 });
-  }
+  const trimmedMessages = allMessages.slice(-8);
 
   // Safety boundary first: self-harm, workplace conduct (HR referral) and medical/therapy topics get fixed text,
   // before any coaching flow (plan, manager, end-session) or the AI model runs.

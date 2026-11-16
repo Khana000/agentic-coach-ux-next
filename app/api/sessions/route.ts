@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAccess } from "../../../lib/server/access";
 import getMongoClient from "../../../lib/mongodb";
+import { errorPayload, parseSessionMessages, readJsonBody, successOf } from "../../../lib/server/request-validation";
 
 const COLLECTION = "sessions";
 const DB_NAME = process.env.MONGO_DB_NAME ?? "coaching";
@@ -10,8 +11,6 @@ type SessionMessage = {
   content: string;
   safety?: "risk" | "conduct" | "clinical";
 };
-
-const SAFETY_KINDS = new Set(["risk", "conduct", "clinical"]);
 
 type SessionSummary = {
   bullets?: string[];
@@ -34,30 +33,6 @@ type SessionPayload = {
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
-
-const sanitizeMessages = (raw: unknown): SessionMessage[] => {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-
-  return raw
-    .filter(
-      (message): message is SessionMessage =>
-        Boolean(message) &&
-        (message as SessionMessage).role !== undefined &&
-        (message as SessionMessage).content !== undefined
-    )
-    .map((message) => {
-      const role = (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant";
-      const content = String(message.content ?? "").trim();
-      // Keep the safety-reply flag (crisis / HR / medical) so restored sessions still exclude those replies
-      // from action extraction. Only the three known values are stored.
-      return role === "assistant" && SAFETY_KINDS.has(String(message.safety))
-        ? { role, content, safety: message.safety }
-        : { role, content };
-    })
-    .filter((message) => message.content.length > 0);
-};
 
 const buildTitle = (payload: SessionPayload, messages: SessionMessage[]) => {
   if (payload.title && payload.title.trim()) {
@@ -110,14 +85,19 @@ export async function POST(request: Request) {
     return access.response;
   }
 
-  let payload: SessionPayload;
-  try {
-    payload = (await request.json()) as SessionPayload;
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
+  }
+  const parsedMessages = parseSessionMessages(successOf(parsed).value.messages);
+  const parsedMessagesError = errorPayload(parsedMessages);
+  if (parsedMessagesError) {
+    return NextResponse.json({ error: parsedMessagesError.error }, { status: parsedMessagesError.status });
   }
 
-  const messages = sanitizeMessages(payload.messages);
+  const payload = successOf(parsed).value as SessionPayload;
+  const messages = successOf(parsedMessages).messages;
   const title = buildTitle(payload, messages);
   const nowState = isPlainObject(payload.nowState) ? payload.nowState : undefined;
   const summary = isPlainObject(payload.summary) ? (payload.summary as SessionSummary) : undefined;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
 import { isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
+import { asOptionalString, errorPayload, readJsonBody, successOf } from "../../../lib/server/request-validation";
 
 type ActionPlanEmailRequest = {
   toEmail?: string;
@@ -16,17 +17,32 @@ export async function POST(request: Request) {
     return access.response;
   }
 
-  let payload: ActionPlanEmailRequest;
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
+  }
+  const payload = successOf(parsed).value as ActionPlanEmailRequest;
 
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const toEmailField = asOptionalString(payload.toEmail, "toEmail", 254);
+  const toEmailFieldError = errorPayload(toEmailField);
+  if (toEmailFieldError) {
+    return NextResponse.json({ error: toEmailFieldError.error }, { status: toEmailFieldError.status });
+  }
+  const coacheeNameField = asOptionalString(payload.coacheeName, "coacheeName", 100);
+  const coacheeNameFieldError = errorPayload(coacheeNameField);
+  if (coacheeNameFieldError) {
+    return NextResponse.json({ error: coacheeNameFieldError.error }, { status: coacheeNameFieldError.status });
+  }
+  const summaryField = asOptionalString(payload.summary, "summary");
+  const summaryFieldError = errorPayload(summaryField);
+  if (summaryFieldError) {
+    return NextResponse.json({ error: summaryFieldError.error }, { status: summaryFieldError.status });
   }
 
-  const toEmail = payload.toEmail?.trim();
-  const coacheeName = payload.coacheeName?.trim() || "Coachee";
-  const summary = payload.summary?.trim() || "";
+  const toEmail = successOf(toEmailField).value?.trim();
+  const coacheeName = successOf(coacheeNameField).value?.trim() || "Coachee";
+  const summary = successOf(summaryField).value?.trim() || "";
   const actions = Array.isArray(payload.actions)
     ? payload.actions.map((item) => String(item).trim()).filter(Boolean)
     : [];
