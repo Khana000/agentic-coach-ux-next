@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "test:action-hub-flow": "node tmp/action-hub-transfer-test.mjs",
-    "test:boundary": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/boundary.test.mjs tests/safety-reply.test.mjs tests/action-plan.test.mjs"
+    "test:boundary": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/boundary.test.mjs tests/safety-reply.test.mjs tests/action-plan.test.mjs",
+    "test:api-regression": "node --test tests/api-regression.test.mjs",
+    "test:api-integration": "node --test tests/api-integration.test.mjs",
+    "test": "node --test tests/boundary.test.mjs tests/safety-reply.test.mjs tests/action-plan.test.mjs tests/api-regression.test.mjs"
   },
   "dependencies": {
     "@elevenlabs/react": "^0.14.1",

@@ -1,3 +1,4 @@
+import { readObject, validateStrings } from "../../../lib/server/request-validation";
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
 import { buildPlanIcs, isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
@@ -31,13 +32,11 @@ export async function POST(request: Request) {
     return access.response;
   }
 
-  let payload: CalendarInviteRequest;
-
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
-  }
+  const parsed = await readObject(request);
+  if (parsed.response) return parsed.response;
+  const fieldsError = validateStrings(parsed.data!, ["toEmail", "coacheeName", "actionText", "startAt", "endAt"]);
+  if (fieldsError) return fieldsError;
+  const payload = parsed.data as CalendarInviteRequest;
 
   const toEmail = payload.toEmail?.trim();
   const actionText = payload.actionText?.trim();

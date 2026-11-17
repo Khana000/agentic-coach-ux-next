@@ -1,9 +1,12 @@
+import { readObject, validateStrings, validateMessages, invalidInput } from "../../../lib/server/request-validation";
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
 import { BOUNDARY_SYSTEM_RULES, detectBoundary, getBoundaryReply } from "../../../lib/server/boundary";
 import { looksLikeSafetyReply } from "../../../lib/safety-reply";
 import {
   addDays,
+  groundPlanDates,
+  requestedPlanDates,
   extractPlanItemsFromPlanText,
   londonToday,
   normalisePlanItems,
@@ -1019,6 +1022,12 @@ const buildStructuredPlan = async (options: {
   today: string;
 }): Promise<{ items: PlanItem[]; today: string; source: "model-json" | "plan-text" } | null> => {
   const { openaiKey, model, planText, messages, today } = options;
+  // The rendered plan is the source of truth. Avoid a second model rewriting
+  // already validated activities or dates (and adding/removing the first step).
+  const datedItems = extractPlanItemsFromPlanText(planText, today);
+  if (datedItems.length && datedItems.every((item) => item.dueDate)) {
+    return { items: datedItems, today, source: "plan-text" };
+  }
   const coachingTurns = messages
     .filter((message) =>
       message.role === "assistant" ? !looksLikeSafetyReply(message.content) : detectBoundary(message.content) === null
@@ -1121,12 +1130,14 @@ export async function POST(request: Request) {
   const antigravKey = process.env.ANTIGRAVITY_API_KEY;
   const antigravEndpoint = process.env.ANTIGRAVITY_ENDPOINT ?? "https://api.antigravity.com/v1/chat";
 
-  let payload: ChatRequest;
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
-  }
+  const parsed = await readObject(request);
+  if (parsed.response) return parsed.response;
+  const fieldsError = validateStrings(parsed.data!, ["context", "style", "coachGender"]);
+  if (fieldsError) return fieldsError;
+  const payload = parsed.data as ChatRequest;
+
+  const messagesError = validateMessages(payload.messages);
+  if (messagesError) return messagesError;
 
   const allMessages = (payload.messages ?? []).filter(
     (message) => message.content && message.content.trim()
@@ -1140,6 +1151,10 @@ export async function POST(request: Request) {
 
   if (trimmedMessages.length === 0) {
     return NextResponse.json({ error: "Missing chat messages." }, { status: 400 });
+  }
+
+  if (!allMessages.some((message) => message.role === "user")) {
+    return invalidInput("Send at least one user message.");
   }
 
   // Safety boundary first: self-harm, workplace conduct (HR referral) and medical/therapy topics get fixed text,
@@ -1300,10 +1315,12 @@ export async function POST(request: Request) {
   }
 
   if (!openaiKey && !antigravKey) {
-    return NextResponse.json({
-      text: planRequested ? buildFallbackPlan() : buildFallbackCoachingReply(latestUserMessage),
-      debug: "local:fallback_no_llm_key"
-    });
+    const today = londonToday();
+    const text = planRequested
+      ? groundPlanDates(buildFallbackPlan(), latestUserMessage, today)
+      : buildFallbackCoachingReply(latestUserMessage);
+    const plan = planRequested ? await buildStructuredPlan({ model, planText: text, messages: allMessages, today }) : null;
+    return NextResponse.json({ text, ...(plan ? { plan } : {}), debug: "local:fallback_no_llm_key" });
   }
 
   if (
@@ -1420,6 +1437,7 @@ export async function POST(request: Request) {
     planRequested
       ? "When plan is requested, use this exact compact structure:"
       : "When in coaching mode, provide a short reflection + probing question + 1-2 strategy options, not a full plan.",
+    planRequested ? `Requested dates in action order (server-resolved, authoritative): ${requestedPlanDates(latestUserMessage, todayLondon).join(", ") || "none"}. A single global deadline applies to every action.` : "",
     planRequested ? "## Reflection" : "In coaching mode, keep formatting light and conversational (prefer plain paragraphs over rigid templates).",
     planRequested ? "1 short paragraph" : "Do not include headings like 'Action Plan' or 'Development Plan' in coaching mode.",
     planRequested ? "## Focus Plan" : "Do not propose a full plan unless asked.",
@@ -1718,6 +1736,10 @@ export async function POST(request: Request) {
     : toolEnvelope.toolCalls.length > 0
     ? `tool:${toolEnvelope.toolCalls.map((toolCall) => toolCall.name).join(",")}`
     : undefined;
+
+  if (planRequested && !hasEndSessionTool) {
+    cleanText = groundPlanDates(cleanText, latestUserMessage, todayLondon);
+  }
 
   // Structured plan for the Action Hub (activities + agreed dates), alongside the plan text.
   const plan =

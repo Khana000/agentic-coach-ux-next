@@ -130,9 +130,9 @@ export const resolveDueDate = (text: string, today: string): string | null => {
   if (/\b(tomorrow|tmrw)\b/.test(t)) return addDays(today, 1);
   if (/\b(today|tonight|this (morning|afternoon|evening)|end of (the )?day|eod)\b/.test(t)) return today;
 
-  const span = t.match(
-    new RegExp(`\\b(?:(?:within|in|over)(?: the next)?|(?:the )?next) ${NUM_RE}\\s+(hours?|hrs?|days?|weeks?|months?)\\b`)
-  );
+  // Keep this a regex literal: the production minifier in this Next version
+  // corrupts word boundaries when folding the interpolated RegExp string.
+  const span = t.match(/\b(?:(?:within|in|over)(?: the next)?|(?:the )?next) (\d{1,3}|a couple of|a few|an|a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fourteen)\s+(hours?|hrs?|days?|weeks?|months?)\b/);
   if (span) {
     const n = toNumber(span[1]);
     const unit = span[2];
@@ -471,4 +471,41 @@ export const isRecipientAllowed = (email: string, allowList: string | undefined)
   if (domains.length === 0) return true;
   const domain = email.trim().toLowerCase().split("@")[1] ?? "";
   return domains.some((allowed) => domain === allowed || domain.endsWith(`.${allowed}`));
+};
+
+/** Resolve an explicitly ordered schedule before the model can rewrite its wording.
+ * A single global deadline applies to all focus actions. Unrelated narrative dates
+ * are left alone; we never assign a meeting date to every action by guessing.
+ */
+export const requestedPlanDates = (request: string, today: string): string[] => {
+  const list = request.match(/\bdates?\s*(?::|for\b|of\b)\s*([^.!?]+)/i)?.[1];
+  const globalDeadline = request.match(/\b(?:all\s+(?:three\s+|the\s+)?actions?[^.!?]{0,30}|(?:action\s+)?plan)\s+(?:due\s+|completed\s+)?by\s+([^.!?]+)/i)?.[1];
+  const source = list ?? globalDeadline;
+  if (!source) return [];
+  const expressions = source.match(/\b(?:day after tomorrow|tomorrow|today|(?:within|in|over)\s+(?:the\s+)?(?:next\s+)?(?:\d+|one|two|three|four|five|six|seven|a|an)\s+(?:hours?|days?|weeks?|months?)|(?:by\s+)?(?:the\s+)?end\s+of\s+(?:the\s+|next\s+)?(?:week|month)|(?:next\s+|this\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d{4}-\d{2}-\d{2})\b/gi) ?? [];
+  const dates = expressions.map((expression) => resolveDueDate(expression, today));
+  // Do not silently shift the remaining dates when one expression cannot resolve.
+  return dates.length && dates.every((date) => date !== null) ? dates as string[] : [];
+};
+
+export const groundPlanDates = (planText: string, request: string, today: string): string => {
+  const dates = requestedPlanDates(request, today);
+  if (!dates.length) return planText;
+  const lines = planText.split("\n");
+  const start = lines.findIndex((line) => /^#{1,6}\s*(?:focus plan|action plan|your plan)\b/i.test(line));
+  if (start < 0) return planText;
+  const indices: number[] = [];
+  for (let i = start + 1; i < lines.length && !/^#{1,6}\s/.test(lines[i]); i++) {
+    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i])) indices.push(i);
+  }
+  if (dates.length !== 1 && dates.length !== indices.length) return planText;
+  indices.forEach((lineIndex, index) => {
+    // Preserve optional time/duration qualifiers following the old date label.
+    const line = lines[lineIndex];
+    const label = /,?\s*(?:timeline|due|by when|deadline|when)\s*:\s*/i.exec(line);
+    const previousDate = label ? line.slice(label.index + label[0].length) : "";
+    const qualifiers = previousDate.match(/\s+(?:at\s+\d[^\n]*|for\s+\d[^\n]*)$/i)?.[0] ?? "";
+    lines[lineIndex] = `${label ? line.slice(0, label.index) : line}, due: ${dates.length === 1 ? dates[0] : dates[index]}${qualifiers}`;
+  });
+  return lines.join("\n");
 };

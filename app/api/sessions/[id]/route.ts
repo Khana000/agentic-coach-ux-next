@@ -1,3 +1,4 @@
+import { readObject, validateStrings, validateMessages } from "../../../../lib/server/request-validation";
 import { NextResponse } from "next/server";
 import { requireAccess } from "../../../../lib/server/access";
 import { ObjectId } from "mongodb";
@@ -95,11 +96,14 @@ export async function PATCH(request: Request, { params }: { params: { id: string
       return NextResponse.json({ error: "Invalid session id." }, { status: 400 });
     }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = (await request.json()) as Record<string, unknown>;
-    } catch (error) {
-      return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+    const parsed = await readObject(request);
+    if (parsed.response) return parsed.response;
+    const payload = parsed.data!;
+    const fieldsError = validateStrings(payload, ["title", "context", "style"]);
+    if (fieldsError) return fieldsError;
+    if (payload.messages !== undefined) {
+      const messagesError = validateMessages(payload.messages);
+      if (messagesError) return messagesError;
     }
 
     const updates: Record<string, unknown> = {};

@@ -1,3 +1,4 @@
+import { readObject, validateStrings, invalidInput } from "../../../lib/server/request-validation";
 import { NextResponse } from "next/server";
 import { DELIVERY_LIMITS, requireAccess } from "../../../lib/server/access";
 import { isRecipientAllowed, isValidRecipientEmail } from "../../../lib/action-plan";
@@ -16,12 +17,14 @@ export async function POST(request: Request) {
     return access.response;
   }
 
-  let payload: ActionPlanEmailRequest;
+  const parsed = await readObject(request);
+  if (parsed.response) return parsed.response;
+  const fieldsError = validateStrings(parsed.data!, ["toEmail", "coacheeName", "subject", "summary"]);
+  if (fieldsError) return fieldsError;
+  const payload = parsed.data as ActionPlanEmailRequest;
 
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  if (payload.actions !== undefined && (!Array.isArray(payload.actions) || payload.actions.some((item) => typeof item !== "string"))) {
+    return invalidInput("Actions must be a list of text items.");
   }
 
   const toEmail = payload.toEmail?.trim();

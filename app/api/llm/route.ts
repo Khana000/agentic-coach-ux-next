@@ -1,3 +1,4 @@
+import { readObject, validateStrings } from "../../../lib/server/request-validation";
 import { NextResponse } from "next/server";
 import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
 
@@ -17,19 +18,18 @@ export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
 
-  if (!apiKey) {
-    return NextResponse.json({ error: "Missing OPENAI_API_KEY." }, { status: 500 });
-  }
-
-  let payload: LlmRequest;
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
-  }
+  const parsed = await readObject(request);
+  if (parsed.response) return parsed.response;
+  const fieldsError = validateStrings(parsed.data!, ["prompt", "context", "style"]);
+  if (fieldsError) return fieldsError;
+  const payload = parsed.data as LlmRequest;
 
   if (!payload.prompt || !payload.prompt.trim()) {
     return NextResponse.json({ error: "Missing prompt text." }, { status: 400 });
+  }
+
+  if (!apiKey) {
+    return NextResponse.json({ error: "Coaching is temporarily unavailable.", code: "not_configured" }, { status: 503 });
   }
 
   const systemPrompt = [

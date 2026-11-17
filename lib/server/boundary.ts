@@ -86,6 +86,12 @@ const RISK_PATTERNS: RegExp[] = [
 const PROTECTED =
   "(woman|women|female|a mum|a mom|a mother|black|asian|brown|mixed race|muslim|jewish|hindu|sikh|christian|gay|lesbian|bisexual|bi|trans|transgender|non-binary|disabled|pregnant|older|too old|over \\d0|neurodivergent|autistic|dyslexic|deaf|blind|an immigrant|foreign|my (race|religion|faith|accent|skin colou?r|skin|ethnicity|nationality|gender|sexuality|sexual orientation|disability|age|pregnancy|condition|hijab|turban|headscarf|beliefs?))";
 const CONDUCT_PATTERNS: RegExp[] = [
+  // Reported identity-based exclusion and repeated origin/accent remarks. Keep the
+  // reported-treatment context so neutral inclusion or communication questions stay coaching.
+  /\b(frozen|freezing|shut|shutting|left|leaving)\s+(me|us)\s+out\b[^.!?]{0,90}\b(hijab|headscarf|turban|religion|faith|race|ethnicity|disability)\b/,
+  /\b(people|colleagues?|coworkers?|co-workers?|team|manager|boss|they)\b[^.!?]{0,35}\b(keep|keeps|kept|repeatedly)\s+ask(?:ing)?\b[^.!?]{0,20}\bwhere\s+(i\s+am|you\s+are|i'?m|you'?re)\s+really\s+from\b/,
+  /\b(manager|boss|supervisor|colleague|they)\b[^.!?]{0,35}\b(told|tell|tells|asked|asking)\s+me\b[^.!?]{0,20}\b(tone\s+down|hide|lose|change|get\s+rid\s+of)\s+my\s+accent\b/,
+
   // Bullying (not "bullish", "bully pulpit").
   /(?<!\b(competitors?|rivals?|suppliers?|vendors?|market|they are|landlord)\b[^.!?]{0,30})\b(bully|bullies|bullied|bullying)\b(?!\s+pulpit)(?!\s+(us|them)\s+(on|over|into)\s+(price|pricing|terms|rates|costs?|discounts?)\b)/,
   // Harassment (not jokey chasing for an invoice / update).
