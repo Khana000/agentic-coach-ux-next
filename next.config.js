@@ -21,9 +21,14 @@ if (isDev) {
   connectSrc.push("https://vercel.live", "wss://*.pusher.com", "https://*.pusher.com");
 }
 
+// AudioWorklet.addModule is governed by script-src (not worker-src) in Chromium.
+// The @elevenlabs/client SDK loads rawAudioProcessor / audioConcatProcessor by
+// URL.createObjectURL(blob) and, if that fails, a data:application/javascript URL.
+// Without blob: and data: here, Start Coaching fails with
+// "Failed to load the rawAudioProcessor worklet module".
 const scriptSrc = isDev
-  ? ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
-  : ["'self'", "'unsafe-inline'", "https://vercel.live"];
+  ? ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:", "data:"]
+  : ["'self'", "'unsafe-inline'", "blob:", "data:", "https://vercel.live"];
 
 const contentSecurityPolicy = [
   "default-src 'self'",
@@ -32,7 +37,7 @@ const contentSecurityPolicy = [
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
-  "worker-src 'self' blob:",
+  "worker-src 'self' blob: data:",
   `connect-src ${connectSrc.join(" ")}`,
   "frame-src 'self' https://vercel.live",
   "frame-ancestors 'none'",
