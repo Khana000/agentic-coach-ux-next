@@ -1,0 +1,28 @@
+/* Fix #15: no text below 11px on desktop/iPad, and the "speaking" signal bars no longer sit on the coach's mouth.
+   Scoped to >=721px so the phone layout is unchanged. */
+@media(min-width:721px){
+  /* Landing */
+  .future-brand small{font-size:11px;letter-spacing:1px}
+  .future-eyebrow,.future-hero .future-eyebrow{font-size:11px;letter-spacing:1.2px}
+  .future-orbit-label{font-size:11px;letter-spacing:1.4px}
+  .future-detail{font-size:11px}
+  .future-proof>span{font-size:11px;letter-spacing:1px}
+  .future-feature-top>span{font-size:11px;letter-spacing:.8px}
+  .future-footer p,.future-footer>span:last-child{font-size:11px;letter-spacing:1px}
+  .human-ai-label{font-size:11px;letter-spacing:1.4px}
+  .human-caption>small{font-size:11px}
+  /* Coaching screen */
+  .brand-subtitle{font-size:11px;letter-spacing:1.4px}
+  .studio-topnote{font-size:11px;letter-spacing:1.4px}
+  .coach-label,.session-dialogue .coach-label{font-size:11px;letter-spacing:1.2px}
+  .coach-selector .ui-label,.session-dialogue .coach-selector .ui-label{font-size:11px}
+  .session-pill{font-size:11px}
+  .session-controls-bar .ui-button{font-size:12px}
+  .session-actions .ui-button{font-size:12px}
+  .session-dialogue .info,.session-dialogue .status,.session-dialogue .error{font-size:12px}
+  .session-dialogue .composer>.ui-label{font-size:12px}
+  .studio-heading>p{font-size:12px}
+}
+/* Signal bars: small pill at the bottom edge of the portrait, clear of the face. */
+.human-presence--compact .human-signal{right:50%;transform:translateX(50%);bottom:4px;height:12px;gap:2px;padding:2px 6px;border-radius:8px;background:#080e16cc}
+.human-presence--compact .human-signal i{width:2px;height:4px}

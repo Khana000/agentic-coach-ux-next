@@ -1,0 +1,15 @@
+/* Structured end-of-session action plan in the Action Hub. */
+.plan-panel{display:grid;gap:12px;padding:14px;border:1px solid #3b5a55;border-radius:14px;background:#10222a}
+.plan-panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.plan-panel-head h3{font-size:15px;font-weight:500;color:#e5f3ee}
+.plan-status{font-size:10px;letter-spacing:.4px;padding:4px 9px;border-radius:20px;background:#3a3420;color:#f3dfa2}
+.plan-status--ok{background:#1f3d34;color:#b5efda}
+.plan-list{display:grid;gap:10px;list-style:none;margin:0;padding:0}
+.plan-item{display:grid;gap:8px;padding:10px;border:1px solid #2c4148;border-radius:12px;background:#13242c}
+.plan-item .ui-textarea{min-height:52px;font-size:12px;line-height:1.5}
+.plan-item-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,.9fr);gap:8px}
+.plan-item-date{font-size:11px;color:#b5efda}
+.plan-item-date--missing{color:#f3dfa2}
+.plan-item-actions{align-items:center;flex-wrap:wrap}
+.plan-link{font-size:11px;color:#b5efda;text-decoration:underline;text-underline-offset:3px}
+@media (max-width:1100px){.plan-item-row{grid-template-columns:1fr 1fr}.plan-item-row .field:last-child{grid-column:1/-1}}

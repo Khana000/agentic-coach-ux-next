@@ -1,0 +1,25 @@
+/* Fix #8: keep the conversation usable (>= ~300px tall) on 1280x800 / 1024x768 even with Session actions open,
+   while preserving the no-page-scroll single-screen layout. */
+@media(min-width:740px) and (min-height:680px){
+  /* Session actions open as one row beside their toggle instead of a second block. */
+  .session-actions{display:block;margin:4px 0 6px}
+  .session-actions summary{float:left;width:auto;min-height:44px;margin-right:12px}
+  .session-actions .action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0;overflow:hidden}
+  .session-actions .action-grid .ui-button{min-height:44px;white-space:normal;line-height:1.2;padding-inline:8px}
+  .session-actions::after{content:"";display:block;clear:both}
+  /* The "session active / choose mode" helper line duplicates the status line below the composer,
+     so hide it whenever a status line is showing. */
+  .session-dialogue>.ui-card-content:has(> .status)>.info{display:none}
+  .session-dialogue>.ui-card-content{padding-bottom:8px}
+  .session-controls-bar{padding:6px 8px}
+  /* Slightly smaller coach avatar in the card header. */
+  .session-dialogue .human-presence--compact{width:56px}
+  .session-dialogue .human-presence--compact .human-portrait{height:64px}
+  .session-dialogue>.ui-card-header{padding-top:10px;padding-bottom:4px}
+  .session-controls-bar{margin-bottom:4px}
+}
+/* On shorter desktop/iPad-landscape windows, drop the decorative studio heading to give the chat the room. */
+@media(min-width:740px) and (min-height:680px) and (max-height:860px){
+  .app--session .studio-heading{display:none}
+  .app--session .session-grid{grid-template-rows:minmax(0,1fr)}
+}

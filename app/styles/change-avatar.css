@@ -1,0 +1,36 @@
+/* Change: larger coach avatar on the coaching screen (landscape desktop / iPad only).
+   The portrait sits in the card's top-left corner and spans the header, the mode/controls bar and the Context row,
+   so it can be much bigger without taking any height away from the conversation.
+   Portrait / phone layouts are untouched. */
+@media (min-width:900px) and (min-height:680px) and (orientation:landscape){
+  .app--session .session-dialogue{position:relative;--av-w:136px;--av-h:170px;--av-top:10px;--av-gap:16px}
+  .app--session .session-dialogue .human-presence--compact{
+    position:absolute;top:var(--av-top);left:16px;z-index:1;
+    width:var(--av-w);padding:4px;margin:0;border-radius:60px 60px 16px 16px}
+  .app--session .session-dialogue .human-presence--compact .human-portrait{
+    height:calc(var(--av-h) - 8px);border-radius:56px 56px 13px 13px}
+  /* Everything that shares the avatar's rows moves right to make room for it. */
+  .app--session .session-dialogue .coach-intro{padding-left:calc(var(--av-w) + var(--av-gap))}
+  .app--session .session-dialogue .session-controls-bar,
+  .app--session .session-dialogue .controls-row{margin-left:calc(var(--av-w) + var(--av-gap))}
+  /* The avatar must end above the transcript: grow the header if the avatar is taller than
+     header + controls bar (58px) + Context row (44px) + their gaps. */
+  .app--session .session-dialogue>.ui-card-header{min-height:calc(var(--av-h) - 101px);display:flex;flex-direction:column;justify-content:center}
+  /* Slightly tighter controls so the narrower bar still fits on one line at 1024px wide. */
+  .app--session .session-dialogue .session-controls-bar{padding-inline:6px}
+  .app--session .session-dialogue .session-controls-bar .ui-button{padding-inline:8px}
+  /* The "Mode: Text/Voice" pill repeats the highlighted mode button; keep it for screen readers only
+     so the narrower bar does not wrap (voice status and sessions-left pills stay visible). */
+  .app--session .session-dialogue .session-metrics>.session-pill:first-child{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+  /* Signal bars: a slightly larger centred pill near the bottom of the bigger portrait. */
+  .app--session .session-dialogue .human-presence--compact .human-signal{bottom:8px;height:16px;gap:3px;padding:3px 8px;border-radius:10px}
+  .app--session .session-dialogue .human-presence--compact .human-signal i{width:3px;height:5px}
+}
+/* Wider desktop windows have a little spare height: go bigger. */
+@media (min-width:1200px) and (min-height:680px) and (orientation:landscape){
+  .app--session .session-dialogue{--av-w:160px;--av-h:200px}
+}
+/* Taller desktop windows (e.g. 1440x900) have more spare height: bigger still. */
+@media (min-width:1200px) and (min-height:880px) and (orientation:landscape){
+  .app--session .session-dialogue{--av-w:176px;--av-h:220px}
+}

@@ -1,0 +1,5 @@
+/* Fix #14: landing nav targets get a visible highlight when reached from the nav. */
+.future-proof,.future-experience{transition:box-shadow .3s,background-color .3s}
+.future-proof:focus,.future-experience:focus{outline:none}
+.future-proof.is-highlighted,.future-experience.is-highlighted{box-shadow:0 0 0 2px #b5efda88,0 0 40px #b5efda22;background-color:#b5efda0a}
+@media(prefers-reduced-motion:reduce){.future-proof,.future-experience{transition:none}}

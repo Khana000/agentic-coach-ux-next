@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { CHAT_LIMITS, requireAccess } from "../../../lib/server/access";
+import { errorPayload, parsePrompt, readJsonBody, successOf } from "../../../lib/server/request-validation";
 
 type LlmRequest = {
   prompt?: string;
@@ -8,23 +10,31 @@ type LlmRequest = {
 };
 
 export async function POST(request: Request) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+  const access = requireAccess(request, CHAT_LIMITS());
+  if (!access.ok) {
+    return access.response;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
 
   if (!apiKey) {
-    return NextResponse.json({ error: "Missing OPENROUTER_API_KEY." }, { status: 500 });
+    return NextResponse.json({ error: "Missing OPENAI_API_KEY." }, { status: 500 });
   }
 
-  let payload: LlmRequest;
-  try {
-    payload = await request.json();
-  } catch (error) {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+  const parsed = await readJsonBody(request);
+  const parsedError = errorPayload(parsed);
+  if (parsedError) {
+    return NextResponse.json({ error: parsedError.error }, { status: parsedError.status });
+  }
+  const parsedPrompt = parsePrompt(successOf(parsed).value.prompt);
+  const parsedPromptError = errorPayload(parsedPrompt);
+  if (parsedPromptError) {
+    return NextResponse.json({ error: parsedPromptError.error }, { status: parsedPromptError.status });
   }
 
-  if (!payload.prompt || !payload.prompt.trim()) {
-    return NextResponse.json({ error: "Missing prompt text." }, { status: 400 });
-  }
+  const payload = successOf(parsed).value as LlmRequest;
+  payload.prompt = successOf(parsedPrompt).prompt;
 
   const systemPrompt = [
     "You are an executive coaching assistant using Heron and Gestalt guidance.",
@@ -49,26 +59,15 @@ export async function POST(request: Request) {
   ].join("\n");
 
   const nowState = payload.nowState ? JSON.stringify(payload.nowState) : "{}";
-  const userContent = `Context: ${payload.context ?? "general"}\nStyle: ${
-    payload.style ?? "balanced"
-  }\nNowState: ${nowState}\nUser: ${payload.prompt ?? ""}`;
+  const userContent = `Context: ${payload.context ?? "general"}\nStyle: ${payload.style ?? "balanced"
+    }\nNowState: ${nowState}\nUser: ${payload.prompt ?? ""}`;
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json"
-  };
-
-  if (process.env.OPENROUTER_SITE_URL) {
-    headers["HTTP-Referer"] = process.env.OPENROUTER_SITE_URL;
-  }
-
-  if (process.env.OPENROUTER_APP_NAME) {
-    headers["X-Title"] = process.env.OPENROUTER_APP_NAME;
-  }
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({
       model,
       messages: [
@@ -83,7 +82,7 @@ export async function POST(request: Request) {
   if (!response.ok) {
     const errorText = await response.text();
     return NextResponse.json(
-      { error: "OpenRouter request failed.", details: errorText },
+      { error: "OpenAI request failed.", details: errorText },
       { status: 502 }
     );
   }

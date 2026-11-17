@@ -1,0 +1,120 @@
+name: Deploy preview to Vercel
+
+on:
+  push:
+    branches: ["redesign-uat-preview"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/redesign-uat-preview'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Pull Vercel env
+        run: npx vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Report preview env var presence
+        run: |
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          needed = [
+              "BETA_ACCESS_CODES",
+              "ACCESS_COOKIE_SECRET",
+              "ELEVENLABS_AGENT_ID",
+              "ELEVENLABS_ALLOWED_AGENT_IDS",
+              "ELEVENLABS_API_KEY",
+          ]
+          candidates = [
+              Path(".vercel/.env.preview.local"),
+              Path(".env.preview.local"),
+          ]
+          env_file = next((path for path in candidates if path.exists()), None)
+          values = {}
+          if env_file is not None:
+              for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                  if not line or line.startswith("#") or "=" not in line:
+                      continue
+                  key, raw = line.split("=", 1)
+                  values[key.strip()] = raw.strip().strip('"').strip("'")
+
+          lines = ["### Preview environment variables (names only)", ""]
+          if env_file is None:
+              lines.append("vercel pull did not write a preview env file. Every name below is missing.")
+              lines.append("")
+          else:
+              lines.append(f"Checked keys in `{env_file}`. Values are not printed.")
+              lines.append("")
+          for key in needed:
+              value = values.get(key, "")
+              if value == "":
+                  lines.append(f"- `{key}`: missing or empty")
+              elif key == "ACCESS_COOKIE_SECRET" and len(value) < 32:
+                  lines.append(f"- `{key}`: set, shorter than 32 characters")
+              else:
+                  lines.append(f"- `{key}`: set")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - name: Build
+        run: npx vercel build --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Deploy
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx vercel deploy --prebuilt --yes --token=${{ secrets.VERCEL_TOKEN }} | tee deploy-output.txt
+          url="$(grep -Eo 'https://[A-Za-z0-9._-]+\.vercel\.app' deploy-output.txt | tail -n 1 || true)"
+          if [ -z "${url}" ]; then
+            echo "No preview URL was found in the deploy output." >&2
+            exit 1
+          fi
+          {
+            echo "url<<EOF"
+            echo "${url}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Vercel preview"
+            echo ""
+            echo "${url}"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Comment preview URL on PR
+        if: steps.deploy.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          gh pr comment 1 --repo "${{ github.repository }}" --body "$(cat <<EOF
+          Vercel preview (preview environment only): ${PREVIEW_URL}
+          EOF
+          )"
